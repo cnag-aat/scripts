@@ -3,7 +3,7 @@
 # script AGPFILE FASTA
 
 use strict;
-
+use lib "/home/devel/talioto/myperlmods/";
 use Bio::DB::Fasta;
 use Bio::Seq;
 use Bio::SeqIO; 
@@ -18,11 +18,12 @@ my $db = Bio::DB::Fasta->new($fasta);
 my $seq_out = Bio::SeqIO->new('-fh' => \*STDOUT,'-format' => 'fasta');
 my $lastid=0;
 my $last_seq='';
-while(<AGP>){
-    chomp;
-	next if m/^#/;
-	next if m/^\s/;
-	my @F = split /\s+/;
+while(my $line = <AGP>){
+    print STDERR $line;
+   chomp $line;
+    if ($line =~m/^#/){print "skipping comment\n";next;}
+    next if $line=~m/^\s/;
+    my @F = split /\s+/,$line;
 
 	$lastid=$F[0] unless $lastid;
 
