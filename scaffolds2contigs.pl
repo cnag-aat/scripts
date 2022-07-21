@@ -117,14 +117,14 @@ foreach my $scaff (@scaffolds){
   chomp;
   my $sid = $scaff->{id};
   my $seq = $scaff->{seq};
-  my $oldid = $sid; 
+  my $oldid = $sid;
   my $seq_up = uc($seq);
   $seq = $seq_up;
   #print STDERR "$sid\n";
   my $num = $min_contig_size - 1;
   if ($num>0){
-  	$seq=~s/^([^N]{1,$num})N/"N" x (length($1)+1)/ge;  
-  	$seq=~s/N([^N]{1,$num})N/"N" x (length($1)+2)/ge; 
+  	$seq=~s/^([^N]{1,$num})N/"N" x (length($1)+1)/ge;
+  	$seq=~s/N([^N]{1,$num})N/"N" x (length($1)+2)/ge;
   	$seq=~s/N([^N]{1,$num})$/"N" x (length($1)+1)/ge;
   }
   if ($seq=~s/^(N+)//){ ### this creates new  offset
@@ -147,7 +147,7 @@ foreach my $scaff (@scaffolds){
   my $count = 1;
   # my @contigs = split /N+/,$seq;
   # foreach my $contig (@contigs){
-    
+
   #   my $cid = sprintf("%s.contig%04d",$sid,$count++);
   #   print COUT "$cid\t$contig\n";
   # }
@@ -188,4 +188,3 @@ sub lensort
   {
     $b->{len} <=> $a->{len}
   }
-

@@ -42,8 +42,8 @@ GetOptions(
 	   'cp:s'           => \$cp,
 	   'lookup!'        => \$lookuptable,
 	   'sort!'			    => \$sort,
-		 'g|gap:i'				=> \$gap_cutoff,
-		 'rename:s'       => \$rename_tsv
+     'g|gap:i'        => \$gap_cutoff,
+     'rename:s'       => \$rename_tsv
 	);
 my $options = <<HERE;
            -f,-s,-i	<file.fasta>  name of fasta file, required
