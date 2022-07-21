@@ -21,7 +21,7 @@
 # `-- preqc
 
 SPECIES=$1
-BASE='/scratch/groups/assembly/shared/projects'
+BASE='/scratch/devel/talioto/denovo_assemblies'
 mkdir -p $BASE/$SPECIES
 chmod 775 $BASE/$SPECIES
 mkdir -p "$BASE/$SPECIES/assembly"
@@ -52,5 +52,3 @@ chmod 775 "$BASE/$SPECIES/data/rna"
 
 mkdir -p "$BASE/$SPECIES/preqc"
 chmod 775 "$BASE/$SPECIES/preqc"
-chmod -R +t "$BASE/$SPECIES"
-
