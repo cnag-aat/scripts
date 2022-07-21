@@ -47,19 +47,19 @@ GetOptions(
 	);
 my $options = <<HERE;
            -f,-s,-i	<file.fasta>  name of fasta file, required
-					 -n	<int>	              number of Ns on which to break (1)
+           -n	<int>	              number of Ns on which to break (1)
            -g	<int>	              threshold unestimated gap size  (0)
-           -name <assembly_name>	assembly name used for output filename and seq prefix
-           -taxid	<int>           taxonomy id from NCBI
-           -species	<species>     species
+           -name <assembly_name>  assembly name used for output filename and seq prefix
+           -taxid <int>           taxonomy id from NCBI
+           -species <species>     species
            -center <center>	      center (CNAG)
            -date <date>	          date of assembly (current local time)
            -mins <int>	          minimum scaffold size to keep (20)
            -minc <int>	          minimum contig size to keep (20)
-					 -sort                  sort scaffolds by size longest to shortest (default)
-					 -nosort                don't sort/original order
-					 -rename <newnames.tsv> tab-delimited text file in format:
-					  												  old_scaff_name <tab> new_scaff_name
+           -sort                  sort scaffolds by size longest to shortest (default)
+           -nosort                don't sort/original order
+           -rename <newnames.tsv> tab-delimited text file in format:
+                                    old_scaff_name <tab> new_scaff_name
 
 HERE
 die "usage: $0 -f <scaffolds.fa> [options]\n$options\n" if !$fname;
