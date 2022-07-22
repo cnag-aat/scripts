@@ -238,7 +238,7 @@ foreach my $scaff (@scaffolds){
       my $cid = sprintf("%s_c%0$cp"."d",$sid,$count++);
       my $contig_len = length($contig_or_gap);
       print COUT "$cid\t$contig_or_gap\n";
-			print SOUT "$contig_or_gap\n";
+			print SOUT "$contig_or_gap";
       print OFF  "$cid\t$offset\n";
       print AGP join("\t",($sid,$offset+1,$offset + $contig_len, $part_number++,'W',$cid,'1',$contig_len,'+')),"\n";
       $offset+=$contig_len;
@@ -246,6 +246,7 @@ foreach my $scaff (@scaffolds){
     }
     $element++;
   }
+	print SOUT "\n";
 }
 #close IN;
 close COUT;
