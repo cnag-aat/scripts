@@ -41,7 +41,7 @@ GetOptions(
 	   'sp:s'           => \$sp,
 	   'cp:s'           => \$cp,
 	   'lookup!'        => \$lookuptable,
-	   'sort!'			    => \$sort,
+	   'sort!'          => \$sort,
      'g|gap:i'        => \$gap_cutoff,
      'rename:s'       => \$rename_tsv
 	);
@@ -96,11 +96,15 @@ if ($rename_tsv){
 open IN, "FastaToTbl $fname |";
 my $maxc=1;
 my $nums=0;
+my $assembly_span = 0;
+print STDERR "Reading $fname...\n";
 while (<IN>) {
   $nums++;
   my $c=1;
   my @F=split;
-  push @scaffolds,{'len'=>length($F[1]),'id'=>$F[0],'seq'=>$F[1]};
+	my $slength = length($F[1];
+	$assembly_span += $slength;
+  push @scaffolds,{'len'=>$slength),'id'=>$F[0],'seq'=>$F[1]};
     while ($F[1]=~/N+/g) {
       $c++;
     }
@@ -115,7 +119,7 @@ if (!$sp) {
 if (!$cp) {
   $cp = length($maxc);
 }
-
+my $progress_chunksize = int($assembly_span/20);
 #open IN, "FastaToTbl $fname |";
 unlink $sout if -e $sout;
 unlink $cout if -e $cout;
@@ -136,14 +140,23 @@ open SOFF, ">$soffsets";
 open GAP, ">$gaps";
 if ($lookuptable){open LU,">$lup";}
 my $scount = 1;
-print STDERR "Running $0 on $fname\n";
+print STDERR "Processing scaffolds\n";
 #while (<IN>){
 my @sorted_scaffolds=();
 if ($sort){@sorted_scaffolds = sort lensort @scaffolds;@scaffolds=@sorted_scaffolds;}
+my $cum_length = 0;
+my $thresh = $progress_chunksize;
 foreach my $scaff (@scaffolds){
   chomp;
   my $sid = $scaff->{id};
   my $seq = $scaff->{seq};
+  my $seq_length = $scaff->{len};
+	### Progress bar
+	$cum_length += $seq_length;
+	if ($cum_length>=$thresh){
+		print STDERR ".";
+		$thresh += $progress_chunksize;
+	}
   my $oldid = $sid;
   my $seq_up = uc($seq);
   $seq = $seq_up;
@@ -206,7 +219,7 @@ foreach my $scaff (@scaffolds){
     #my $contig = $1;
     if ($element % 2){
       my $gapsize = length($contig_or_gap);
-      if ($gapsize == 200){
+      if ($gapsize >100){
 				$gapsize = 100;
 				$evidence = "proximity_ligation";$component_type="U";
       }elsif($gapsize > $gap_cutoff){
@@ -239,7 +252,7 @@ close GAP;
 close AGP;
 close OFF;
 if ($lookuptable){close LU;}
-
+print STDERR "\nFinished OK.\n";
 sub lensort
   {
     $b->{len} <=> $a->{len}
