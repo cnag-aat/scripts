@@ -92,7 +92,6 @@ if ($rename_tsv){
 	close TSV;
 }
 
-
 open IN, "FastaToTbl $fname |";
 my $maxc=1;
 my $nums=0;
@@ -102,9 +101,9 @@ while (<IN>) {
   $nums++;
   my $c=1;
   my @F=split;
-	my $slength = length($F[1];
+	my $slength = length($F[1]);
 	$assembly_span += $slength;
-  push @scaffolds,{'len'=>$slength),'id'=>$F[0],'seq'=>$F[1]};
+  push @scaffolds,{'len'=>$slength,'id'=>$F[0],'seq'=>$F[1]};
     while ($F[1]=~/N+/g) {
       $c++;
     }
