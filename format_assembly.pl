@@ -148,12 +148,13 @@ foreach my $scaff (@scaffolds){
   chomp;
   my $sid = $scaff->{id};
   my $seq = $scaff->{seq};
+	next if $seq!~/[ACGTacgt]/;
   my $seq_length = $scaff->{len};
 	### Progress bar
 	$cum_length += $seq_length;
 	if ($cum_length>=$thresh){
-		print STDERR ".";
-		$thresh += $progress_chunksize;
+		print STDERR "." x int(($cum_length-$thresh)/$progress_chunksize);
+		$thresh = int($cum_length/$progress_chunksize)+1;
 	}
   my $oldid = $sid;
   my $seq_up = uc($seq);
@@ -174,10 +175,9 @@ foreach my $scaff (@scaffolds){
   $seq=~s/N+$//;
   next if length($seq)<$min_scaff_size;
 
-  my $outseq = $seq;
-  $outseq=~s/[^ACGTacgt]/N/g;
-  next if $outseq!~/[ACGTacgt]/;
-	if($rename_tsv){
+  #my $outseq = $seq;
+  #$outseq=~s/[^ACGTacgt]/N/g;
+  if($rename_tsv){
 		$keep = 1;
 		my $suffix = '';
 		if($sid =~s/(_unloc)$//){
@@ -198,7 +198,7 @@ foreach my $scaff (@scaffolds){
 	}
 
 
-  print SOUT "$sid\t$outseq\n";
+
   if($lookuptable){print LU "$sid\t$oldid\n";}
   my $count = 1;
   # my @contigs = split /N+/,$seq;
@@ -213,6 +213,8 @@ foreach my $scaff (@scaffolds){
   my $part_number = 1;
   my $evidence = 'paired-ends';
   my $component_type = "N";
+	#print SOUT "$sid\t$seq\n";
+	print SOUT "$sid\t";
   foreach my $contig_or_gap (split(/(N+)/i,$seq)){# foreach my $contig_or_gap (split(/(N{$num_n,})/i,$seq))
     #my $contig = $1;
     if ($element % 2){
@@ -226,15 +228,17 @@ foreach my $scaff (@scaffolds){
       }else{
 				$evidence = "paired-ends";$component_type="N";
       }
+			print SOUT "N" x $gapsize;
       print AGP join("\t",($sid,$offset+1,$offset+$gapsize, $part_number++,$component_type,$gapsize,'scaffold','yes',$evidence)),"\n";
       $offset+=$gapsize;
     }else{
-      $contig_or_gap=~s/[^ACGTacgt]/N/g; #replace IUPAC ambiguity codes;
+      #$contig_or_gap=~s/[^ACGTacgt]/N/g; #replace IUPAC ambiguity codes;
       #my $offset = $end - length($contig);
       print GAP  "$sid\t$END\t$offset\n" if $count > 1;;
       my $cid = sprintf("%s_c%0$cp"."d",$sid,$count++);
       my $contig_len = length($contig_or_gap);
       print COUT "$cid\t$contig_or_gap\n";
+			print SOUT "$contig_or_gap\n";
       print OFF  "$cid\t$offset\n";
       print AGP join("\t",($sid,$offset+1,$offset + $contig_len, $part_number++,'W',$cid,'1',$contig_len,'+')),"\n";
       $offset+=$contig_len;
