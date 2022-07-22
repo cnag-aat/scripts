@@ -157,8 +157,8 @@ foreach my $scaff (@scaffolds){
 		$thresh = int($cum_length/$progress_chunksize)+1;
 	}
   my $oldid = $sid;
-  my $seq_up = uc($seq);
-  $seq = $seq_up;
+  #my $seq_up = uc($seq);
+  #$seq = $seq_up;
   #print STDERR "$sid\n";
   my $num = $min_contig_size - 1;
   if ($num>0){
