@@ -60,7 +60,6 @@ my $options = <<HERE;
            -nosort                don't sort/original order
            -rename <newnames.tsv> tab-delimited text file in format:
                                     old_scaff_name <tab> new_scaff_name
-
 HERE
 die "usage: $0 -f <scaffolds.fa> [options]\n$options\n" if !$fname;
 print STDERR "'-n 0' does not make sense. Running with '-n 1'\n" if !$num_n;
@@ -176,7 +175,7 @@ foreach my $scaff (@scaffolds){
   next if length($seq)<$min_scaff_size;
 
   my $outseq = $seq;
-  $outseq=~s/[^ACGT]/N/g;
+  $outseq=~s/[^ACGTacgt]/N/g;
   next if $outseq!~/[ACGTacgt]/;
 	if($rename_tsv){
 		$keep = 1;
