@@ -1,0 +1,202 @@
+#!/usr/bin/env python
+
+#changed on 5_10_2015 because of IP change 
+
+import argparse
+import os
+import commands
+
+""" Var definition """
+options_to_url = {"project" : "project__name=",
+                  "subproject" : "subprojects__subproject_name=",
+                  "pedigree" : "pedigree=",
+                  "cohort" : "cohort__name=",
+                  "sample" : "barcode=",
+                  "SampleName" : "name=",
+                  "aliquot" : "library__aliquot__aliquot_barcode=",
+                  "library" : "library__name=",
+                  "material" : "subprojects__sample_type__name=",
+                  "flowcell" : "library__loadedwith__lane__flowcell__name=",
+                  "lane" : "library__loadedwith__lane__lane=",
+                  "index" : "library__multiplex_index__multiplex_index_name=",
+                  "GenomeRef" : "library__loadedwith__mapping__reference_filename=",
+                  "subprojectApplication" : "subprojects__application__name=",
+                  "motherId" : "mother_id=",
+                  "fatherId" : "father_id=",
+                  "libraryGBS" : "library__gbs_index__multiplex_index_name=",
+                  "mappingVersion" : "library__loadedwith__mapping__version=",
+                  "mapperName" : "mapper=",
+                  "mapperVersion" : "mapperversion="
+}
+
+options_to_url_QC={"libraryPassFail" : "library__passfail__status=",
+                   "LanePassFail" : "library__loadedwith__passfail__status="}
+
+lims_header = "project;subproject;id;SampleName;sample;library;SubprojectId;material;aliquot;flowcell;lane;index;libraryPassFail;LanePassFail;libApplication;Kit;Organism;Sex;pedigree;cohort;GenomeRef;SplitIndexcohort;SubprojectCov;motherId;fatherId;library__gbs_index__multiplex_index_name;readLength;sampleStatus;mappingVersion;mapperName;mapperVersion"
+
+
+
+
+def main():
+    lims_url = "http://172.16.10.22/lims/lims_q_2/?"
+    options = get_options()
+    lims_url = generate_lims_query(lims_url,options,options_to_url)
+    lims_output = commands.getstatusoutput("wget -q -O- \""+ lims_url + "\" |sort|uniq|grep -v \"^#\"")[1].split("\n")  
+    #For some reason lims doesn't allow me to query everything at once, with the filters so they have to be added one by one
+    lims_filtering_list = generate_filtering_list(lims_url, options)
+    print lims_header
+    for lims_out_line in lims_output:
+        if lims_out_line not in lims_filtering_list:
+            print lims_out_line
+         
+
+#Some strange characters are permitted which causes conflicts in the html ("#" for instance)
+#Convert them to hex so all the options are now codified as hex ASCII
+def text_fixer(character):
+     return("%"+str(hex(ord(character))).split("x")[1])
+ 
+def generate_lims_query(lims_url, options, options_to_url):
+    for url_key in options_to_url.keys():
+        url_to_query = options_to_url[url_key]
+        value = getattr(options, url_key)
+        if value != None:
+            for query_value in value.split(","):
+                query_value = "".join(map(str,map(text_fixer,query_value)))
+                lims_url = add_to_lims_query(lims_url, url_to_query, query_value)
+    return(lims_url)
+
+def generate_filtering_list(lims_url,options):
+    lims_filtering_list = list()
+    for url_key in options_to_url_QC.keys():
+         lims_url_QC = lims_url
+         url_to_query = options_to_url_QC[url_key]
+         value = getattr(options, url_key)
+         if value != None:
+            for query_value in value.split(","):
+                lims_url_QC = add_to_lims_query(lims_url_QC, url_to_query, query_value)
+                lims_filtering_list = lims_filtering_list + commands.getstatusoutput("wget -q -O- \""+ lims_url_QC + "\"")[1].split("\n")
+    return(lims_filtering_list)
+
+def add_to_lims_query(lims_url, url_to_query, query_value):
+    lims_url = lims_url+"&"+url_to_query+query_value
+    return(lims_url)
+
+def get_options():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-project',
+			'-p', 
+			dest="project",
+                        help="OPT CSV",
+                        )
+    parser.add_argument('-subproject',
+                        '-sp',
+                        help="OPT CSV", 
+                        dest="subproject",
+                        )
+    parser.add_argument('-pedigree',
+                        '-ped', 
+                        help="OPT CSV",
+                        dest="pedigree",
+                        )
+    parser.add_argument('-cohort',
+                        help="OPT CSV",
+                        dest="cohort",
+                        )
+    parser.add_argument('-sample',
+                        '-s',
+                        help="OPT CSV",
+                        dest="sample",
+                        )
+    parser.add_argument('-sampleName',
+                        '-sn', 
+                        help="OPT CSV",
+                        dest="SampleName",
+                        )
+    parser.add_argument('-aliquot',
+                        '-a', 
+                        help="OPT CSV",
+                        dest="aliquot",
+                        )
+    parser.add_argument('-library',
+                        '-lib', 
+                        help="OPT CSV",
+                        dest="library",
+                        )
+    parser.add_argument('-material',
+                        '-m', 
+                        help="OPT CSV",
+                        dest="material",
+                        )
+    parser.add_argument('-flowcell',
+                        '-f', 
+                        help="OPT CSV",
+                        dest="flowcell",
+                        )
+    parser.add_argument('-lane',
+                        '-l', 
+                        help="OPT CSV",
+                        dest="lane",
+                        )
+    parser.add_argument('-index',
+                        '-i', 
+                        help="OPT CSV",
+                        dest="index",
+                        )
+    parser.add_argument('-genome',
+                        '-g', 
+                        help="OPT CSV",
+                        dest="GenomeRef",
+                        )
+    parser.add_argument('-subprojectapplication',
+                        '-spap',
+                        help="OPT CSV",
+                        dest="subprojectApplication",
+                        )
+    parser.add_argument('-libpf',
+                        '-libraryPassFail',
+                        help="OPT CSV of library PassFail status to EXCLUDE",
+                        dest="libraryPassFail",
+                        )
+    parser.add_argument('-lanepf',
+                        '-lanePassFail',
+                        help="OPT CSV of lane PassFail status to EXCLUDE",
+                        dest="LanePassFail",
+                        )
+    parser.add_argument('-mother_id',
+                        '-mid',
+                        help="OPT CSV",
+                        dest="motherId",
+                        )
+    parser.add_argument('-father_id',
+                        '-fid',
+                        help="OPT CSV",
+                        dest="fatherId",
+                        )
+    parser.add_argument('-gbs_index',
+                        '-gbs',
+                        help="OPT CSV",
+                        dest="libraryGBS",
+			            )
+    parser.add_argument('-mappingVersion',
+                        '-mV',
+                        help="OPT CSV",
+                        dest="mappingVersion",
+                        )
+    parser.add_argument('-mapperName',
+                        '-MN',
+                        help="OPT CSV",
+                        dest="mapperName",
+            			)
+    parser.add_argument('-mapperVersion',
+                        '-MV',
+                        help="OPT CSV",
+                        dest="mapperVersion",
+            			)
+                       
+    options = parser.parse_args()
+    return options
+
+
+if __name__ == "__main__":
+    exit(main())
+

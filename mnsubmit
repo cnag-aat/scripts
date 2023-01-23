@@ -1,0 +1,814 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use FindBin qw($Script);
+use Carp;
+
+use lib "/home/groups/assembly/talioto/myperlmods/";
+use ETK::Type::Date;
+use ETK::Type::String;
+use ETK::Type::Integer;
+use ETK::Type::File;
+use ETK::Setup;
+use ETK::ArgList;
+use ETK::Arg::Date;
+use ETK::Arg::Integer;
+use ETK::Arg::File;
+use ETK::Arg::String;
+use ETK::Arg::Switch;
+
+use constant MIN_CPUS_PER_TASK => 1;
+use constant MAX_CPUS_PER_TASK => 48;
+use constant MIN_TASKS => 1;
+use constant MAX_TASKS => 832;
+use constant MIN_NODES => 1;
+use constant MAX_NODES => 52;
+use constant PPN => 48;
+use constant MAX_SCRATCH => 170000;
+use constant MAX_MEMORY => 126000;
+use constant DEFAULT_PART => "main";
+
+$ENV{MNSUBMIT}=1;
+
+my $CWD = `pwd`; $CWD =~ s/[\s\r\n]//gm;
+
+#Passa format dies:hores:mins:segs a segons
+sub time2minutes ($) {
+    my $t = shift;
+    if ($t =~ /^(\d+)[\:\+](\d+):(\d+):(\d+)$/) {
+	$t = $1 * 86400 + $2 * 3600 + $3 * 60 + $4;
+    } elsif ($t =~ /^(\d+):(\d+):(\d+)$/) {
+	$t = $1 * 3600 + $2 * 60 + $3;
+    } elsif ($t =~ /^(\d+):(\d+)$/) {
+	$t = $1 * 60 + $2;
+    } elsif ($t =~ /^(\d+)$/) {
+	$t = $1 + 0;
+    } else {
+	return undef;
+    }
+    if ($t % 60) {
+	$t = int($t/60) + 1;
+    } else {
+	$t = int($t/60);
+    }
+    return $t;
+}
+
+sub etk2at ($) {
+    my $date = shift;
+    return sprintf "%s%02d", $date->lc_string("%H:%M:%S %m/%d/"),
+    (($date->lc_string("%Y") + 0) % 100);
+}
+
+my $args = ETK::ArgList->new(
+    ETK::Arg::Date->new("startdate", "defer allocation until the specified time"),
+    ETK::Arg::Integer->new("cpus_per_task", "number of cpus per task (threads)")
+    ->set_default(1),
+    ETK::Arg::File->new("initialdir", "working directory")
+    ->set_test("edx"),
+    ETK::Arg::Integer->new("total_tasks", "number of tasks")
+    ->set_default(1),
+    ETK::Arg::String->new("dependency,dep", "depends on the specified job id"),
+    ETK::Arg::String->new("class,c", "job class"),
+    ETK::Arg::String->new("job_name", "job name"),
+    ETK::Arg::String->new("account,a", "account"),
+    ETK::Arg::Switch->new("test,t", "do not submit the job"),
+    ETK::Arg::String->new("reservation,r", "reservation"),
+    ETK::Arg::String->new("partition,p", "partition"),
+    ETK::Arg::String->new("array,A", "array"),
+    );
+
+my $SBATCH = "sbatch";
+
+my @JCF = ETK::Setup->configure($args, @ARGV);
+@JCF = ("-") if ($#JCF < 0);
+
+my $DEBUG = $args->get("debug");
+my $TEST  = $args->get("test");
+
+my $DEF_STARTDATE = ($args->has("startdate"))?
+    ETK::Type::Date->new($args->get("startdate")):
+    undef;
+
+my $DEPENDENCY = ($args->has("dependency"))?
+    ETK::Type::String->new($args->get("dependency")):
+    undef;
+
+my $DEF_CPUS_PER_TASK =
+    ETK::Type::Integer->new($args->get("cpus_per_task"))->value;
+
+my $DEF_REQUEUE = 0;
+
+if ($DEF_CPUS_PER_TASK < MIN_CPUS_PER_TASK ||
+    $DEF_CPUS_PER_TASK > MAX_CPUS_PER_TASK) {
+    die "${Script}: ERROR: cannot allocate $DEF_CPUS_PER_TASK cpus per task\n";
+}
+
+my $DEF_TASKS_PER_NODE = undef;
+
+my $DEF_INITIALDIR = ($args->has("initialdir"))?
+    $args->get("initialdir"):
+    undef;
+if (defined($DEF_INITIALDIR) && $DEF_INITIALDIR !~ /^\//) {
+    $DEF_INITIALDIR = join("/", $CWD, $DEF_INITIALDIR);
+}
+
+my $DEF_TOTAL_TASKS =
+    ETK::Type::Integer->new($args->get("total_tasks"))->value;
+
+if ($DEF_TOTAL_TASKS < MIN_TASKS ||
+    $DEF_TOTAL_TASKS > MAX_TASKS) {
+    die "${Script}: ERROR: cannot allocate $DEF_TOTAL_TASKS tasks\n";
+}
+
+if (($DEF_TOTAL_TASKS * $DEF_CPUS_PER_TASK) > MAX_TASKS) {
+    die "${Script}: ERROR: cannot allocate " . $DEF_TOTAL_TASKS * $DEF_CPUS_PER_TASK . " cpus\n";
+}
+
+my $DEF_QOS = undef;
+if ($args->has("class")) {
+    $DEF_QOS = $args->get("class");
+}
+
+my $DEF_JOB_NAME = undef;
+if ($args->has("job_name")) {
+    $DEF_JOB_NAME = $args->get("job_name");
+    if ($DEF_JOB_NAME !~ /^[0-9A-Za-z\-\_\ ]+$/) {
+	die "${Script}: ERROR: job_name has non alphanumeric characters\n";
+    }
+}
+
+my $DEF_ACCOUNT = undef;
+if ($args->has("account")) {
+    $DEF_ACCOUNT = $args->get("account");
+}
+
+my $DEF_RESERVATION = undef;
+if ($args->has("reservation")) {
+    $DEF_RESERVATION = $args->get("reservation");
+}
+
+my $DEFAULT_PARTITION = DEFAULT_PART;
+if ($args->has("partition")) {
+    $DEFAULT_PARTITION = $args->get("partition");
+}
+
+my $DEF_ARRAY = undef;
+if ($args->has("array")) {
+    $DEF_ARRAY = $args->get("array");
+}
+
+my $DEF_EXCLUSIVE = 0;
+
+my $DEF_KILL_ON_FAILURE = 1;
+
+my @KEYWORD_LIST = qw(
+  startdate
+  tasks_per_node
+  cpus_per_task
+  total_tasks
+  dependency
+  initialdir
+  nodes
+  error
+  output
+  input
+  job_name
+  account
+  class
+  partition
+  wall_clock_limit
+  features
+  nodeset
+  notify
+  scratch
+  kill_on_failure
+  x11
+  node_usage
+  without_memcheck
+  mining_level
+  tracing
+  mpi2
+  reservation
+  requeue
+  memory
+  array
+);
+# node_usage
+
+
+
+foreach my $JCF (@JCF) {
+    my $FH;
+    if ($JCF eq "-") {
+	$FH = *STDIN;
+    } else {
+	if (!-e $JCF || !-f $JCF || !-r $JCF) {
+	    carp "${Script}: ERROR: cannot read job command file: ${JCF}: not submitted\n";
+	    next;
+	}
+	if (!open($FH, $JCF)) {
+	    carp "${Script}: ERROR: cannot open job command file: ${JCF}: not submitted\n";
+	    next;
+	}
+    }
+
+    my $firstLine=1;
+    my @FILE = ();
+    my %KEYWORD;
+    my ($key, $val);
+    while (<$FH>) {
+	if (/\r\n/) {
+	    carp "${Script}: ERROR: file not in UNIX format, please execute dos2unix. ${JCF}: not submitted\n";
+	    exit 1;
+	}
+
+	chomp($_);
+	if ($firstLine) {
+	    if (! /#!\s*([^\s]*)/) {
+      		carp "${Script}: ERROR: file is not a script or first line is not #!/path/to/interpreter. ${JCF}: not submitted\n";
+      		exit 1;
+	    }
+	    else {
+		if (!-e $1|| !-f $1|| !-x $1) {
+		    carp "${Script}: ERROR: the interpreter $1 does not exist. ${JCF}: not submitted\n";
+		    exit 1;				
+		}
+	    }
+	    $firstLine=0;
+	}
+	push(@FILE, $_);
+	if (/^\s*#\s*\@\s*([A-Za-z0-9_]+)\s*=\s*(.*)/) {
+	    $key = lc($1);
+	    $val = $2;
+	    if (grep {$key eq $_} @KEYWORD_LIST) {
+		$val = "" if (!defined($val));
+		$val =~ s/\s+$//;
+		if (exists $KEYWORD{$key}) {
+		    $KEYWORD{$key} .= "\0" . $val;
+		} else {
+		    $KEYWORD{$key} = $val;
+		}
+	    } else {
+		carp "${Script}: WARNING: unrecognized keyword: ${key}: ignored\n";
+	    }
+	}
+    }
+
+    my @OPTS = ();
+    my $VALUE;
+
+    my $STARTDATE = $DEF_STARTDATE;
+    if (exists $KEYWORD{startdate}) {
+	@OPTS = split(/\0/, $KEYWORD{startdate});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"startdate\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$STARTDATE = ETK::Type::Date->new(shift(@OPTS));
+    }
+#
+    my $TASKS_PER_NODE = $DEF_TASKS_PER_NODE;
+    if (exists $KEYWORD{tasks_per_node}) {
+	@OPTS = split(/\0/, $KEYWORD{tasks_per_node});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"tasks_per_node\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$VALUE = ETK::Type::Integer->new(shift(@OPTS))->value;
+#	if ($VALUE < 1 || $VALUE > PPN) {
+#	    carp "${Script}: ERROR: cannot allocate $VALUE tasks per node: not submitted\n";
+#	    next;
+#	}
+	$TASKS_PER_NODE = $VALUE;
+    }
+#
+    my $SCRATCH = undef;
+    if (exists $KEYWORD{scratch}) {
+	@OPTS = split(/\0/, $KEYWORD{scratch});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"scratch\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$VALUE = ETK::Type::Integer->new(shift(@OPTS))->value;
+#	if ($VALUE < 0 || $VALUE > MAX_SCRATCH) {
+#	    carp "${Script}: ERROR: cannot allocate more than " . MAX_SCRATCH . " MB of scratch per node : not submitted\n";
+#	    next;
+#	}
+	$SCRATCH = $VALUE;
+    }
+#
+    my $CPUS_PER_TASK = $DEF_CPUS_PER_TASK;
+    if (exists $KEYWORD{cpus_per_task}) {
+	@OPTS = split(/\0/, $KEYWORD{cpus_per_task});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"cpus_per_task\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$VALUE = ETK::Type::Integer->new(shift(@OPTS))->value;
+#	if ($VALUE < MIN_CPUS_PER_TASK || $VALUE > MAX_CPUS_PER_TASK) {
+#	    carp "${Script}: ERROR: cannot allocate $VALUE cpus per task: not submitted\n";
+#	    next;
+#	}
+	$CPUS_PER_TASK = $VALUE;
+    }
+#
+    my $INITIALDIR = $DEF_INITIALDIR;
+    if (exists $KEYWORD{initialdir}) {
+	@OPTS = split(/\0/, $KEYWORD{initialdir});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"initialdir\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$VALUE = shift(@OPTS);
+#	if (!-e $VALUE || !-d $VALUE || !-x $VALUE) {
+#	    carp "${Script}: ERROR: invalid value for \"initialdir\": ${VALUE}: not submitted\n";
+#	    next;
+#	}
+	if ($VALUE !~ /^\//) {
+	    $INITIALDIR = join("/", $CWD, $VALUE);
+	} else {
+	    $INITIALDIR = $VALUE;
+	}
+    }
+    if (!defined $INITIALDIR) {
+	$INITIALDIR = $CWD;
+    }
+#
+    my $ERROR = undef;
+    if (exists $KEYWORD{error}) {
+	@OPTS = split(/\0/, $KEYWORD{error});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"error\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$VALUE = shift(@OPTS);
+#	if (!ETK::Type::File->type_check($VALUE)) {
+#	    carp "${Script}: ERROR: invalid value for \"error\": ${VALUE}: not submitted\n";
+#	    next;
+#	}
+	if ($VALUE !~ /^\//) {
+	    $ERROR = join("/", $INITIALDIR, $VALUE);
+	} else {
+	    $ERROR = $VALUE;
+	}
+    }
+#
+    my $OUTPUT = undef;
+    if (exists $KEYWORD{output}) {
+	@OPTS = split(/\0/, $KEYWORD{output});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"output\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$VALUE = shift(@OPTS);
+#	if (!ETK::Type::File->type_check($VALUE)) {
+#	    carp "${Script}: ERROR: invalid value for \"output\": ${VALUE}: not submitted\n";
+#	    next;
+#	}
+	if ($VALUE !~ /^\//) {
+	    $OUTPUT = join("/", $INITIALDIR, $VALUE);
+	} else {
+	    $OUTPUT = $VALUE;
+	}
+    }
+#
+    my $INPUT = undef;
+    if (exists $KEYWORD{input}) {
+	@OPTS = split(/\0/, $KEYWORD{input});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"input\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$VALUE = shift(@OPTS);
+#	if (!ETK::Type::File->type_check($VALUE)) {
+#	    carp "${Script}: ERROR: invalid value for \"input\": ${VALUE}: not submitted\n";
+#	    next;
+#	}
+	if ($VALUE !~ /^\//) {
+	    $INPUT = join("/", $INITIALDIR, $VALUE);
+	} else {
+	    $INPUT = $VALUE;
+	}
+    }
+#
+    my $JOB_NAME = $DEF_JOB_NAME;
+    if (exists $KEYWORD{job_name} || $DEF_JOB_NAME) {
+	if (! $DEF_JOB_NAME) { 
+	    @OPTS = split(/\0/, $KEYWORD{job_name});
+	    $JOB_NAME = shift(@OPTS);
+	}
+	$JOB_NAME =~ s/\s/_/g;
+    }
+#
+    my $TOTAL_TASKS = $DEF_TOTAL_TASKS;
+    if (exists $KEYWORD{total_tasks}) {
+	@OPTS = split(/\0/, $KEYWORD{total_tasks});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"total_tasks\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$VALUE = ETK::Type::Integer->new(shift(@OPTS))->value;
+#
+#	if ($VALUE < MIN_TASKS || $VALUE > MAX_TASKS) {
+#	    carp "${Script}: ERROR: cannot allocate $VALUE tasks: not submitted\n";
+#	    next;
+#	}
+	$TOTAL_TASKS = $VALUE;
+    }
+#
+    $VALUE = $CPUS_PER_TASK * $TOTAL_TASKS;
+#    if ($VALUE > MAX_TASKS) {
+#	carp "${Script}: ERROR: cannot allocate $VALUE cpus: not submitted\n";
+#	next;
+#    }
+#    
+    my $NODES = "";
+    if (exists $KEYWORD{nodes}) {
+	@OPTS = split(/\0/, $KEYWORD{nodes});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"nodes\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$VALUE = ETK::Type::Integer->new(shift(@OPTS))->value;
+#	if ($VALUE < MIN_NODES || $VALUE > MAX_NODES) {
+#	    carp "${Script}: ERROR: cannot allocate $VALUE nodes: not submitted\n";
+#	    next;
+#	}
+	$NODES = $VALUE;
+	$VALUE = $CPUS_PER_TASK * $TOTAL_TASKS;
+#	if ($VALUE > ($NODES * PPN)) {
+#	    carp "${Script}: ERROR: cannot allocate $VALUE cpus in $NODES nodes: not submitted\n";
+#	    next;
+#	}
+    }
+#    
+    my $PARTITION = $DEFAULT_PARTITION;
+    my $PARTITION_SPEC = 0; #if user request a partition this is set to 1;
+    if (exists $KEYWORD{partition}) {
+	@OPTS = split(/\0/, $KEYWORD{partition});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"partition\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$PARTITION = shift(@OPTS);
+        my @PARTITION_LIST = split(/,/, $PARTITION);
+#        foreach my $part (@PARTITION_LIST) {
+#	    if($part ne "genA" && $part ne "genB" && $part ne DEFAULT_PART && $part ne "smp" && $part ne "gpu"){
+#	        carp "${Script}: ERROR: Users cannot define a partition: ${JCF}: not submitted\n";
+#	        #next;
+#	        exit(1);
+#	    }
+#        }
+	$PARTITION_SPEC = 1;
+    }
+    if($PARTITION ne DEFAULT_PART){
+	$PARTITION_SPEC = 1;
+    }
+##    if($PARTITION ne "genA" && $PARTITION ne "genB" && $PARTITION ne DEFAULT_PART && $PARTITION ne "smp" && $PARTITION ne "gpu"){
+##	carp "${Script}: ERROR: Users cannot define a partition: ${JCF}: not submitted\n";
+##	next;
+##    }
+#
+    my $WALL_CLOCK_LIMIT = undef;
+    if (exists $KEYWORD{wall_clock_limit}) {
+	@OPTS = split(/\0/, $KEYWORD{wall_clock_limit});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"wall_clock_limit\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$VALUE = shift(@OPTS);
+	#RT 192902
+	#$WALL_CLOCK_LIMIT = time2minutes($VALUE);
+	$WALL_CLOCK_LIMIT = $VALUE;
+#	if (!defined($WALL_CLOCK_LIMIT)) {
+#	    carp "${Script}: ERROR: invalid \"wall_clock_limit\" specification: ${VALUE}: not submitted\n";
+#	    next;
+#	}
+#    }
+#    if (!defined($WALL_CLOCK_LIMIT)) {
+#	carp "${Script}: ERROR: \"wall_clock_limit\" not specified: not submitted\n";
+#	next;
+    }
+#
+#
+    my $NOTIFY = undef;
+#    if (exists $KEYWORD{notify}) {
+#	@OPTS = split(/\0/, $KEYWORD{notify});
+#	my %NOPTS;
+#	my $err = 0;
+#	foreach my $o (@OPTS) {
+#	    my @list = ($o);
+#	    if ($o =~ /[,\s]/) {
+#		@list = split(/[,\s]+/, $o);
+#	    }
+#	    foreach my $i (@list) {
+#		if (!grep {uc($i) eq $_} qw(BEGIN END FAIL ALL)) {
+#		    $err = 1;
+#		    last;
+#		}
+#		$NOPTS{uc($i)} = 1;
+#	    }
+#	}
+#	if ($err) {
+#	    carp "${Script}: ERROR: invalid \"notify\" specification: not submitted\n";
+#	    next;
+#	}
+#	if ($NOPTS{ALL}) {
+#	    $NOTIFY = "ALL";
+#	} else {
+#	    $NOTIFY = join(",", sort keys %NOPTS);
+#	}
+#    }
+#
+    my $MAILTO = "";
+#
+    my $ACCOUNT = $DEF_ACCOUNT;
+    if (exists $KEYWORD{account}) {
+	@OPTS = split(/\0/, $KEYWORD{account});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"account\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$ACCOUNT = shift(@OPTS);
+    }
+#
+    my $KILL_ON_FAILURE= $DEF_KILL_ON_FAILURE;
+    if (exists $KEYWORD{kill_on_failure}) {
+	@OPTS = split(/\0/, $KEYWORD{kill_on_failure});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"kill_on_failure\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$KILL_ON_FAILURE=shift(@OPTS);
+#	if ($KILL_ON_FAILURE !~ /^[01]$/) {
+#	    carp "${Script}: ERROR: kill_on_failure value should be 0 or 1. ${JCF}: not submitted\n";
+#	    next;
+#	}
+    }
+#
+    my $QOS = $DEF_QOS;
+    if (exists $KEYWORD{class}) {
+	@OPTS = split(/\0/, $KEYWORD{class});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"class\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$QOS = shift(@OPTS);
+    }
+#
+    my $NODESET = undef;
+#    
+    my $FEATURES = undef;
+    if (exists $KEYWORD{features}) {
+	@OPTS = split(/\0/, $KEYWORD{features});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"features\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$FEATURES = shift(@OPTS);
+    }
+#
+    my $EXCLUSIVE= $DEF_EXCLUSIVE;
+    if (exists $KEYWORD{node_usage}) {
+	@OPTS = split(/\0/, $KEYWORD{node_usage});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"node_usage\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$VALUE = lc(shift(@OPTS));
+#	if ($VALUE eq "not_shared") {
+#	    $EXCLUSIVE=1;
+#	} elsif ($VALUE eq "shared") {
+#	    $EXCLUSIVE=0;
+#	} else {
+#	    carp "${Script}: ERROR: invalid \"node_usage\". Values: shared or not_shared. $JCF: Not submitted\n";
+#	    next;
+#	}
+    }
+#
+    my $NOMEMCHECK= 0;
+    if (exists $KEYWORD{without_memcheck}) {
+	@OPTS = split(/\0/, $KEYWORD{without_memcheck});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"without_memcheck\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$VALUE = lc(shift(@OPTS));
+#	if ($VALUE eq "1") {
+#	    if($EXCLUSIVE eq "0"){
+#      		carp "${Script}: ERROR: Using \"without_memcheck\" keyword requires \"node_usage=not_shared\" explicitly: not submitted\n";
+#      		next;
+#	    }
+#	    $NOMEMCHECK=1;
+#	} 
+    }
+#
+    $VALUE = $CPUS_PER_TASK * $TOTAL_TASKS;
+#    if ($VALUE > MAX_TASKS) {
+#	carp "${Script}: ERROR: cannot allocate $VALUE cpus: not submitted\n";
+#	next;
+#    }
+#    if (defined ($TASKS_PER_NODE) && defined($CPUS_PER_TASK)) {
+#	$VALUE = $TASKS_PER_NODE * $CPUS_PER_TASK;
+#	if ($VALUE > PPN) {
+#	    carp "${Script}: ERROR: cannot allocate $VALUE cpus per node: not submitted\n";
+#	    next;
+#	}
+#    }
+#
+    my $FULL_NODE=0;
+#    if (defined ($TASKS_PER_NODE)) {
+#	$VALUE = $TASKS_PER_NODE * $CPUS_PER_TASK;
+#	if ($VALUE == PPN && $TOTAL_TASKS * $CPUS_PER_TASK % PPN == 0) {
+#	    $FULL_NODE=1;
+#	}
+#    }
+#    elsif (defined($CPUS_PER_TASK) && $CPUS_PER_TASK == PPN) {
+#	$FULL_NODE=1;
+#    }
+#
+    my $RESERVATION = $DEF_RESERVATION;
+    if (exists $KEYWORD{reservation}){
+	@OPTS = split(/\0/, $KEYWORD{reservation});
+	$RESERVATION = shift @OPTS;
+    }
+#
+    my $MEMORY = undef;
+    if (exists $KEYWORD{memory}) {
+	@OPTS = split(/\0/, $KEYWORD{memory});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"memory\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$VALUE = ETK::Type::Integer->new(shift(@OPTS))->value;
+#	if ($VALUE < 0 || $VALUE > MAX_MEMORY) {
+#	    carp "${Script}: ERROR: cannot allocate more than " . MAX_MEMORY . " MB of memory per node : not submitted\n";
+#	    next;
+#	}
+	$MEMORY = $VALUE;
+    }
+#
+    my $ARRAY = undef;
+    if (exists $KEYWORD{array}) {
+	@OPTS = split(/\0/, $KEYWORD{array});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"array\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$ARRAY = lc(shift(@OPTS));
+    }
+    if($DEF_ARRAY){
+	$ARRAY = $DEF_ARRAY;
+    }
+##### REPASSAR PRODUCTION ###############
+#    if(defined $QOS && $QOS =~ /machine/){
+#	$PARTITION="gpu";
+#	$ACCOUNT="machine";
+#    }else{
+#	if(defined $WALL_CLOCK_LIMIT && $WALL_CLOCK_LIMIT <= 360 && $PARTITION_SPEC==0){
+#	    $PARTITION="main,gpu";
+#	}elsif($PARTITION_SPEC==0){
+#	    $PARTITION="main";
+#	}
+#    }
+#######################################
+#
+    my $REQUEUE = $DEF_REQUEUE;
+    if (exists $KEYWORD{requeue}) {
+	@OPTS = split(/\0/, $KEYWORD{requeue});
+#	if ($#OPTS != 0) {
+#	    carp "${Script}: ERROR: multiple \"requeue\" keywords: ${JCF}: not submitted\n";
+#	    next;
+#	}
+	$VALUE = lc(shift(@OPTS));
+#	if ($VALUE eq "1" || $VALUE eq "yes") {
+#	    $REQUEUE=1;
+#	} elsif ($VALUE eq "shared") {
+#	    $EXCLUSIVE=0;
+#	} else {
+#	    carp "${Script}: ERROR: invalid \"node_usage\". Values: shared or not_shared. $JCF: Not submitted\n";
+#	    next;
+#	}
+    }
+
+
+    my @OPTIONS = ();
+    my @EXTENSIONS = ();
+
+    if (defined $DEPENDENCY) {
+	push(@OPTIONS, sprintf("--dependency=%s", $DEPENDENCY));
+    }
+
+    if (defined $STARTDATE) {
+	push(@OPTIONS,
+	     sprintf("\"--begin=%s\"", etk2at($STARTDATE)));
+    } 
+    if (defined($TASKS_PER_NODE)) {
+	push(@OPTIONS, sprintf("--ntasks-per-node=%d", $TASKS_PER_NODE));
+    }
+    if ($CPUS_PER_TASK) {
+	push(@OPTIONS, sprintf("--cpus-per-task=%d", $CPUS_PER_TASK));
+    }
+    if (defined($SCRATCH)) {
+	if ( $TOTAL_TASKS * $CPUS_PER_TASK % PPN == 0 || (defined($TASKS_PER_NODE) && $TASKS_PER_NODE * $CPUS_PER_TASK == PPN) || $EXCLUSIVE == 1){
+	    $SCRATCH = $SCRATCH / ($TASKS_PER_NODE?$TASKS_PER_NODE:1);
+	    push(@OPTIONS,sprintf("--tmp=%d",$SCRATCH));
+        }else{  
+	    carp "${Script}: ERROR: scratch keyword requires exclusive nodes\n";
+	    next;   
+        }       
+    }
+    if ($MEMORY) {
+	push(@OPTIONS, sprintf("--mem=%d", $MEMORY));
+    }
+
+    push(@OPTIONS, sprintf("\"--workdir=%s\"", $INITIALDIR));
+    if (defined $ERROR) {
+	push(@OPTIONS, sprintf("\"--error=%s\"", $ERROR));
+    }
+    if (! $KILL_ON_FAILURE) {
+	push(@OPTIONS, sprintf("\"--no-kill\""));
+    }
+    if (defined $OUTPUT) {
+	push(@OPTIONS, sprintf("\"--output=%s\"", $OUTPUT));
+    }
+    if (defined $INPUT) {
+	push(@OPTIONS, sprintf("\"--input=%s\"", $INPUT));
+    }
+    if (defined $JOB_NAME) {
+	push(@OPTIONS, sprintf("\"--job-name=%s\"", $JOB_NAME));
+    }
+    push(@OPTIONS, sprintf("--ntasks=%d", $TOTAL_TASKS));
+    if (!$NODES) {
+	$CPUS_PER_TASK = 1 if (!$CPUS_PER_TASK);
+	if (!defined($TASKS_PER_NODE)) {
+	    $TASKS_PER_NODE = PPN / $CPUS_PER_TASK;
+	}
+	$NODES = int($TOTAL_TASKS / $TASKS_PER_NODE);
+	$NODES += 1 if ($TOTAL_TASKS % $TASKS_PER_NODE);
+    }
+    push(@OPTIONS, sprintf("--nodes=%s-", $NODES)) if ($NODES);
+    if (defined $PARTITION) {
+	push(@OPTIONS, sprintf("\"--partition=%s\"", $PARTITION));
+    }
+    if (defined $WALL_CLOCK_LIMIT) {
+	push(@OPTIONS, sprintf("\"--time=%s\"", $WALL_CLOCK_LIMIT));
+    }
+    if (defined $FEATURES) {
+	push(@OPTIONS, sprintf("\"--constraint=%s\"", $FEATURES));
+    }
+    if (defined $NOTIFY) {
+	push(@OPTIONS, sprintf("\"--mail-type=%s\"", $NOTIFY));
+	push(@OPTIONS, sprintf("\"--mail-user=%s\"", $MAILTO));
+    }
+    if (defined $ACCOUNT) {
+	push(@OPTIONS, sprintf("\"--account=%s\"", $ACCOUNT));
+    }
+    if ($EXCLUSIVE) {
+	push(@OPTIONS, sprintf("\"--exclusive\""));
+    }
+
+    if ($NOMEMCHECK) {
+	push(@OPTIONS, sprintf("\"--without-memcheck\""));
+    }
+
+    if (defined $QOS) {
+	push(@OPTIONS, sprintf("--qos=%s", $QOS));
+    }
+    if (! $REQUEUE) {
+	push(@OPTIONS, sprintf("\"--no-requeue\""));
+    }else{
+	push(@OPTIONS, sprintf("\"--requeue\""));
+    }
+    
+    if (defined $RESERVATION){
+	push(@OPTIONS, sprintf("\"--reservation=%s\"",$RESERVATION));
+    }
+
+    if (defined $ARRAY){
+	push(@OPTIONS, sprintf("\"--array=%s\"",$ARRAY));
+    }
+
+    my $CMD  = sprintf "%s %s", $SBATCH, join(" ", @OPTIONS);
+    $ENV{SLURM_SBATCH_CMD}=$CMD;
+
+    my $FILE = $JCF;
+    if ($FILE ne "-" && $FILE !~ /^\//) {
+	$FILE = join("/", $CWD, $FILE);
+    }
+
+    if ($DEBUG) {
+	print STDERR $CMD, " $FILE\n";
+    }
+
+    if (!$TEST) {
+	if ($JCF eq "-") {
+	    system $CMD;
+	} else {
+	    system "$CMD $FILE"
+	}
+    }
+}
