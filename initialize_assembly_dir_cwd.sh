@@ -21,7 +21,7 @@
 # `-- preqc
 
 SPECIES=$1
-BASE='/scratch_isilon/groups/assembly/data/projects'
+BASE=$PWD;
 mkdir -p $BASE/$SPECIES
 chmod 775 $BASE/$SPECIES
 mkdir -p "$BASE/$SPECIES/assembly"
@@ -30,14 +30,20 @@ mkdir -p "$BASE/$SPECIES/analysis"
 chmod 775 "$BASE/$SPECIES/analysis"
 mkdir -p "$BASE/$SPECIES/annotation"
 chmod 775 "$BASE/$SPECIES/annotation"
-mkdir -p "$BASE/$SPECIES/curation"
-chmod 775 "$BASE/$SPECIES/curation"
+mkdir -p "$BASE/$SPECIES/assembly/curation"
+chmod 775 "$BASE/$SPECIES/assembly/curation"
+mkdir -p "$BASE/$SPECIES/assembly/mitogenome"
+chmod 775 "$BASE/$SPECIES/assembly/mitogenome"
+mkdir -p "$BASE/$SPECIES/assembly/hic_qc"
+chmod 775 "$BASE/$SPECIES/assembly/hic_qc"
 mkdir -p "$BASE/$SPECIES/data/dna/ont"
 chmod 775 "$BASE/$SPECIES/data/dna/ont"
 mkdir -p "$BASE/$SPECIES/data/dna/illumina"
 chmod 775 "$BASE/$SPECIES/data/dna/illumina"
 mkdir -p "$BASE/$SPECIES/data/dna/hic"
 chmod 775 "$BASE/$SPECIES/data/dna/hic"
+mkdir -p "$BASE/$SPECIES/data/dna/hifi"
+chmod 775 "$BASE/$SPECIES/data/dna/hifi"
 mkdir -p "$BASE/$SPECIES/data/rna/ont"
 chmod 775 "$BASE/$SPECIES/data/rna/ont"
 mkdir -p "$BASE/$SPECIES/data/rna/illumina"
@@ -49,8 +55,5 @@ chmod 775 "$BASE/$SPECIES/data/reference"
 chmod 775 "$BASE/$SPECIES/data"
 chmod 775 "$BASE/$SPECIES/data/dna"
 chmod 775 "$BASE/$SPECIES/data/rna"
-
-mkdir -p "$BASE/$SPECIES/preqc"
-chmod 775 "$BASE/$SPECIES/preqc"
 chmod -R +t "$BASE/$SPECIES"
 

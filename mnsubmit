@@ -27,7 +27,7 @@ use constant MIN_NODES => 1;
 use constant MAX_NODES => 52;
 use constant PPN => 48;
 use constant MAX_SCRATCH => 170000;
-use constant MAX_MEMORY => 126000;
+use constant MAX_MEMORY => 1000000;
 use constant DEFAULT_PART => "main";
 
 $ENV{MNSUBMIT}=1;
@@ -77,8 +77,9 @@ my $args = ETK::ArgList->new(
     ETK::Arg::Switch->new("test,t", "do not submit the job"),
     ETK::Arg::String->new("reservation,r", "reservation"),
     ETK::Arg::String->new("partition,p", "partition"),
-    ETK::Arg::String->new("array,A", "array"),
-    );
+    ETK::Arg::String->new("array,A", "array"),    
+    ETK::Arg::String->new("memory", "memory"),
+);
 
 my $SBATCH = "sbatch";
 
@@ -98,6 +99,9 @@ my $DEPENDENCY = ($args->has("dependency"))?
 
 my $DEF_CPUS_PER_TASK =
     ETK::Type::Integer->new($args->get("cpus_per_task"))->value;
+
+my $DEF_MEM =
+    ETK::Type::Integer->new($args->get("memory"))->value;
 
 my $DEF_REQUEUE = 0;
 
@@ -651,6 +655,8 @@ foreach my $JCF (@JCF) {
 	$MEMORY = $VALUE;
     }
 #
+#
+$MEMORY = $DEF_MEM;
     my $ARRAY = undef;
     if (exists $KEYWORD{array}) {
 	@OPTS = split(/\0/, $KEYWORD{array});

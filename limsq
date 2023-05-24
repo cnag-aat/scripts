@@ -38,7 +38,7 @@ lims_header = "project;subproject;id;SampleName;sample;library;SubprojectId;mate
 
 
 def main():
-    lims_url = "http://172.16.10.22/lims/lims_q_2/?"
+    lims_url = "http://172.16.10.26/lims/lims_q_2/?"
     options = get_options()
     lims_url = generate_lims_query(lims_url,options,options_to_url)
     lims_output = commands.getstatusoutput("wget -q -O- \""+ lims_url + "\" |sort|uniq|grep -v \"^#\"")[1].split("\n")  
