@@ -55,5 +55,7 @@ chmod 775 "$BASE/$SPECIES/data/reference"
 chmod 775 "$BASE/$SPECIES/data"
 chmod 775 "$BASE/$SPECIES/data/dna"
 chmod 775 "$BASE/$SPECIES/data/rna"
+mkdir -p "$BASE/$SPECIES/ENA/"
+chmod 775 "$BASE/$SPECIES/ENA"
 chmod -R +t "$BASE/$SPECIES"
 
