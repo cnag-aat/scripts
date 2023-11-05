@@ -9,8 +9,9 @@
 ############################################################
 
 use strict;
-use lib "/project/devel/aateam/perlmods";
-use lib "/apps/BIOPERL/1.6.1/lib/perl5";
+use lib "/home/groups/assembly/talioto/myperlmods/";
+#use lib "/apps/BIOPERL/1.6.1/lib/perl5";
+#use lib "/scratch/project/devel/aateam/perlmods";
 use Bio::Seq;
 use Bio::SeqIO;
 use Bio::DB::Fasta;
@@ -48,6 +49,8 @@ $newfile =~ s/\.gff//g;
 #	open (ISEQ, ">$newfile"."_full_intron_seq.fa");
 #}
 my $db = Bio::DB::Fasta->new($fa);
+my $seq = $db->get_Seq_by_id('Pcu23_ss01');
+#print "$seq\n";
 my @gff;
 my %cds_recs;
 my %p;
@@ -74,6 +77,7 @@ while (my $l = <IN>) {
 }
 my %seen = ();
 foreach my $cdsr (sort keys %cds_recs){
+  print "$cdsr\n";
   if(exists $seen{$p{$cdsr}}){
     next;
   }else{
@@ -90,6 +94,7 @@ foreach my $cdsr (sort keys %cds_recs){
   foreach my $cds (@sortedexons){
     $ntseq .= SeqOp::get_seq_BioDBFasta($db, $sid,$cds->[3],$cds->[4],$cds->[6]);
   }
+  #print "$sid\t$ntseq\n";
   my $description = '';
   if ($ntseq !~ /^ATG.*(TAA|TGA|TAG)$/ || $sortedexons[0]->[7]){$description = "partial_cds";}
   my $cdsobj  = Bio::Seq->new( 
