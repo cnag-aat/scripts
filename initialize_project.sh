@@ -1,24 +1,16 @@
 #!/usr/bin/env bash
 
-
+# |-- ENA
 # |-- analysis
 # |-- annotation
 # |-- assembly
-# |-- curation
-# |-- data
-# |   |-- dna
-# |   |   |-- clr
-# |   |   |-- hic
-# |   |   |-- hifi
-# |   |   |-- illumina
-# |   |   `-- ont
-# |   |-- external
-# |   |-- reference
-# |   `-- rna
-# |       |-- illumina
-# |       |-- isoseq
-# |       `-- ont
-# `-- preqc
+# |   |-- curation
+# |   |-- hic_qc
+# |   `-- mitogenome
+# `-- data
+#     |-- cnag
+#     |-- external
+#     `-- reference
 
 SPECIES=$1
 CNAGDATA=$2
