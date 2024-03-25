@@ -12,8 +12,8 @@ my $argfile = 0;
 my $name = 0;
 my $cpt = 1;
 my $batchsize = 0;
-my $partition = 'main';
-my $limit = "24:00:00";
+my $partition = 'genD';
+my $limit = "6:00:00";
 my @ARGS = @ARGV;
 GetOptions(
 	   'n|name:s'        => \$name,
@@ -64,7 +64,7 @@ print SCR qq(#!/bin/bash
 #SBATCH --partition $partition 
 #SBATCH --qos=$class
 #SBATCH --cpus-per-task $cpt
-#SBATCH --workdir $cwdir 
+#SBATCH -D $cwdir 
 );
 my $jobfile = $name.'.$SLURM_ARRAY_TASK_ID.sh';
 print SCR q/CMD=$(gawk "FNR==$SLURM_ARRAY_TASK_ID {print}" /,"$argfile)"; 
