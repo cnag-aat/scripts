@@ -86,7 +86,7 @@ close RUNS or die $!;
 
 #exit;
 die "no runs found\n" if not scalar @runs;
-die "more than one sample found; should create a virtual sample first\n" if keys %samples > 1;
+print STDERR "more than one sample found; should use specimen-level biosample or create a virtual sample first\n" if keys %samples > 1;
 $manifest{SAMPLE} = join(",",keys %samples);
 $manifest{RUN_REF} = join(",",@runs);
 $manifest{PROGRAM}= uc($assembler).', HYPO, PURGE_DUPS, YAHS';
