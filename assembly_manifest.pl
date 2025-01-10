@@ -35,6 +35,7 @@ my $hic_protocol = "Omni-C";
 my $species = 0;
 my $name = 0;
 my $mito_fasta = 0;
+my $biosample = 0;
 GetOptions(
     'name:s' => \$name,
 	'assembly|fasta|fa|f:s' => \$assembly_fasta,
@@ -45,6 +46,7 @@ GetOptions(
     'assembler:s' => \$assembler,
     'species:s' => \$species,
     'hic:s' => \$hic_protocol,
+    'sample:s' => \$biosample,
     'h|help'   => \$printhelp
 );
 $manifest{ASSEMBLYNAME}=$name;
@@ -86,13 +88,26 @@ close RUNS or die $!;
 
 #exit;
 die "no runs found\n" if not scalar @runs;
-print STDERR "more than one sample found; should use specimen-level biosample or create a virtual sample first\n" if keys %samples > 1;
-$manifest{SAMPLE} = join(",",keys %samples);
+if($biosample){
+    $manifest{SAMPLE} = $biosample;
+}else{
+    print STDERR "more than one sample found; should use specimen-level biosample or create a virtual sample first\n" if keys %samples > 1;
+    $manifest{SAMPLE} = join(",",keys %samples);
+}
+
 $manifest{RUN_REF} = join(",",@runs);
 $manifest{PROGRAM}= uc($assembler).', HYPO, PURGE_DUPS, YAHS';
 $manifest{PLATFORM}= 'ONT, Illumina, '.$hic_protocol;
-
-my $mingap = `gfastats $assembly_fasta | grep 'Smallest gap' | sed 's/.*\s: //'`;
+my $mingap = 1;
+if ($assembly_fasta !~/fasta/){
+    my $rename = $assembly_fasta;
+    $rename =~ s/fa/fasta/;
+    `ln -s $assembly_fasta $rename`;
+    $mingap = `gfastats $rename | grep 'Smallest gap' | sed 's/.*\s: //'`;
+    unlink($rename);
+}else{
+    $mingap = `gfastats $assembly_fasta | grep 'Smallest gap' | sed 's/.*\s: //'`;
+}
 chomp $mingap;
 $manifest{MINGAPLENGTH}=$mingap;
 
@@ -104,17 +119,17 @@ $manifest{MINGAPLENGTH}=$mingap;
 die "$assembly_fasta cannot be named $name.asm.fa.gz\n" if $assembly_fasta eq "$name.asm.fa.gz";
 die "$chrlist cannot be named $name.asm.fa.gz\n" if $chrlist eq "$name.chromosome.list.txt";
 if ($mito_fasta){
-    `gzip -cdf $assembly_fasta $mito_fasta | pigz > $name.asm.fa.gz` if ! -e "$name.asm.fa.gz";
+    `gzip -cdf $assembly_fasta $mito_fasta | gzip -c --fast  > $name.asm.fa.gz`;# if ! -e "$name.asm.fa.gz";
     my $mt_name = `head -n 1 $mito_fasta | sed s'/>//'`;
     chomp $mt_name; 
     print STDERR "Found mitogenome: $mt_name\n";
     `echo -e  "$mt_name\tMT\tcircular-chromosome\tMitochondrion" >> $name.chromosome.list.txt`;
 }else{
-    `gzip -cdf $assembly_fasta | pigz > $name.asm.fa.gz` if ! -e "$name.asm.fa.gz";
+    `gzip -cdf $assembly_fasta | gzip -c --fast > $name.asm.fa.gz`;# if ! -e "$name.asm.fa.gz";
 }
 $manifest{FASTA} = "$name.asm.fa.gz";
 
-`gzip $name.chromosome.list.txt`;
+`gzip -f $name.chromosome.list.txt`;
 $manifest{CHROMOSOME_LIST} = "$name.chromosome.list.txt.gz";
 
 my $unlocs = `grep -c unloc $chrlist`;  #| gzip > qqGluDors1.3.unlocalized.txt `
@@ -144,6 +159,6 @@ sub print_manifest{
     `mkdir -p submit`;
     my $manifestfile = $mani->{ASSEMBLYNAME}.".assembly_manifest.txt";
     print "Now check your manifest for errors, then run:\nconda activate /software/assembly/conda/JAVA/\n"; 
-    print "java -jar /software/assembly/src/webin-cli-validator/webin-cli-7.1.1.jar -context genome -userName WEBIN-1543 -password BGWSEi8y -manifest $manifestfile -centerName 'CNAG'   -outputDir submit -submit \n";
+    print "java -jar /software/assembly/src/webin-cli-validator/webin-cli-8.1.0.jar -context genome -userName WEBIN-1543 -password BGWSEi8y -manifest $manifestfile -centerName 'CNAG'   -outputDir submit -submit \n";
 
 }
