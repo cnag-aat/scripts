@@ -26,7 +26,7 @@ $manifest{PLATFORM}='ONT, Illumina, Omni-C';
 $manifest{PROGRAM}='NEXTDENOVO, HYPO, PURGE_DUPS, YAHS';
 $manifest{MINGAPLENGTH}='100';
 $manifest{MOLECULETYPE}='genomic DNA';
-my $assembler = 'NEXTDENOVO';
+my $assembler = 'NEXTDENOVO, HYPO, PURGE_DUPS, YAHS';
 my $assembly_fasta = 0;
 my $chrlist = 0;
 my $unlocs = 0;
@@ -96,7 +96,7 @@ if($biosample){
 }
 
 $manifest{RUN_REF} = join(",",@runs);
-$manifest{PROGRAM}= uc($assembler).', HYPO, PURGE_DUPS, YAHS';
+$manifest{PROGRAM}= uc($assembler);
 $manifest{PLATFORM}= 'ONT, Illumina, '.$hic_protocol;
 my $mingap = 1;
 if ($assembly_fasta !~/fasta/){
