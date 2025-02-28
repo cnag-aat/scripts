@@ -60,7 +60,7 @@ $manifest{COVERAGE}=$coverage;
 # get sample and runs from https://genomes.cnag.cat/erga-stream/ena_runs/
 # get project from 
 die "first run:\n conda activate /software/assembly/conda/gfastats-1.3.6-3/\n" if system("gfastats");
-die "Mandatory arguments: -name -fasta -chr -cov -species\n" if !($name && $assembly_fasta && $chrlist && $coverage &&  $species);
+die "Mandatory arguments: -name -fasta -chr -cov -species -sample\n" if !($name && $assembly_fasta && $chrlist && $coverage &&  $species && $biosample);
 die "$mito_fasta doesn't exist" if $mito_fasta and ! -e $mito_fasta;
 die "$assembly_fasta doesn't exist" if $assembly_fasta and ! -e $assembly_fasta;
 die "$chrlist doesn't exist" if $chrlist and ! -e $chrlist;
