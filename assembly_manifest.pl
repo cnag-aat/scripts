@@ -36,6 +36,10 @@ my $species = 0;
 my $name = 0;
 my $mito_fasta = 0;
 my $biosample = 0;
+my $given_assembly_project = 0;
+my $given_runs = 0;
+my $assembly_project = 0;
+my $runstring = '';
 GetOptions(
     'name:s' => \$name,
 	'assembly|fasta|fa|f:s' => \$assembly_fasta,
@@ -47,6 +51,8 @@ GetOptions(
     'species:s' => \$species,
     'hic:s' => \$hic_protocol,
     'sample:s' => \$biosample,
+    'project:s' => \$given_assembly_project,
+    'runs:s' => \$given_runs,
     'h|help'   => \$printhelp
 );
 $manifest{ASSEMBLYNAME}=$name;
@@ -61,33 +67,42 @@ die "$chrlist doesn't exist" if $chrlist and ! -e $chrlist;
 $manifest{ASSEMBLYNAME}=$name;
 
 print STDERR "Finding study, runs and samples...\n";
-
-my $assembly_project = `curl -X 'GET'   'https://www.ebi.ac.uk/ena/portal/api/search?result=study&query=study_tree%28PRJEB61747%29&limit=0&includeMetagenomes=true'   -H 'accept: */*' | grep assembly | grep -v alternate | grep "$species" | cut -f 1 `;
-chomp $assembly_project;
-print "$assembly_project\n";
-my $data_project = `curl -X 'GET'   'https://www.ebi.ac.uk/ena/portal/api/search?result=study&query=study_tree%28PRJEB61747%29&limit=0&includeMetagenomes=true'   -H 'accept: */*' | grep data | grep "$species" | cut -f 1 `;
-chomp $data_project;
-print "$data_project\n";
-$manifest{STUDY}=$assembly_project;
-
-my $runfetchcmd = "curl -X 'GET' 'https://www.ebi.ac.uk/ena/portal/api/search?query=study_tree%28$data_project%29&result=read_run&fields=instrument_platform,run_accession,sample_accession&limit=0' | grep OXFORD_NANOPORE | ";
-#print "$runfetchcmd\n";
-open RUNS, $runfetchcmd or die $!;
-my @runs = ();
-my %samples = ();
-while (my $line = <RUNS>) {
-    chomp $line;
-    my @fields = split ' ',$line;
-    if ($fields[0] =~/^ERR/){
-        print STDERR $fields[0],"\n";
-        push @runs, $fields[0];
-        $samples{$fields[2]}++;
-    }
+if ($given_assembly_project){
+    $assembly_project = $given_assembly_project;
+}else{
+    $assembly_project = `curl -X 'GET'   'https://www.ebi.ac.uk/ena/portal/api/search?result=study&query=study_tree%28PRJEB61747%29&limit=0&includeMetagenomes=true'   -H 'accept: */*' | grep assembly | grep -v alternate | grep "$species" | cut -f 1 `;
+    chomp $assembly_project;
 }
-close RUNS or die $!;
+print "$assembly_project\n";
+$manifest{STUDY}=$assembly_project;
+if ($given_runs){
+    $runstring = $given_runs;
+}else{
+    my $data_project = `curl -X 'GET'   'https://www.ebi.ac.uk/ena/portal/api/search?result=study&query=study_tree%28PRJEB61747%29&limit=0&includeMetagenomes=true'   -H 'accept: */*' | grep data | grep "$species" | cut -f 1 `;
+    chomp $data_project;
+    print "$data_project\n";
 
-#exit;
-die "no runs found\n" if not scalar @runs;
+    my $runfetchcmd = "curl -X 'GET' 'https://www.ebi.ac.uk/ena/portal/api/search?query=study_tree%28$data_project%29&result=read_run&fields=instrument_platform,run_accession,sample_accession&limit=0' | grep OXFORD_NANOPORE | ";
+    #print "$runfetchcmd\n";
+    open RUNS, $runfetchcmd or die $!;
+    my @runs = ();
+    my %samples = ();
+    while (my $line = <RUNS>) {
+        chomp $line;
+        my @fields = split ' ',$line;
+        if ($fields[0] =~/^ERR/){
+            print STDERR $fields[0],"\n";
+            push @runs, $fields[0];
+            $samples{$fields[2]}++;
+        }
+    }
+    close RUNS or die $!;
+
+    #exit;
+    die "no runs found\n" if not scalar @runs;
+    $runstring = join(",",@runs);
+}
+
 if($biosample){
     $manifest{SAMPLE} = $biosample;
 }else{
@@ -95,7 +110,7 @@ if($biosample){
     $manifest{SAMPLE} = join(",",keys %samples);
 }
 
-$manifest{RUN_REF} = join(",",@runs);
+$manifest{RUN_REF} = $runstring;
 $manifest{PROGRAM}= uc($assembler);
 $manifest{PLATFORM}= 'ONT, Illumina, '.$hic_protocol;
 my $mingap = 1;
