@@ -83,11 +83,13 @@ if ($given_runs){
     print "$data_project\n";
 
     my $runfetchcmd = "curl -X 'GET' 'https://www.ebi.ac.uk/ena/portal/api/search?query=study_tree%28$data_project%29&result=read_run&fields=instrument_platform,run_accession,sample_accession&limit=0' | grep OXFORD_NANOPORE | ";
-    #print "$runfetchcmd\n";
+    print "$runfetchcmd\n";
     open RUNS, $runfetchcmd or die $!;
     my @runs = ();
     my %samples = ();
+    my $linecount = 0;
     while (my $line = <RUNS>) {
+        $linecount++;
         chomp $line;
         my @fields = split ' ',$line;
         if ($fields[0] =~/^ERR/){
@@ -96,17 +98,18 @@ if ($given_runs){
             $samples{$fields[2]}++;
         }
     }
-    close RUNS or die $!;
-
-    #exit;
-    die "no runs found\n" if not scalar @runs;
-    $runstring = join(",",@runs);
+    if ($linecount < 2 || not scalar @runs){
+        $runstring = '';
+        print STDERR "WARNING: no runs found\n";
+    }else{
+        $runstring = join(",",@runs);
+    }
 }
 
 if($biosample){
     $manifest{SAMPLE} = $biosample;
 }else{
-    print STDERR "more than one sample found; should use specimen-level biosample or create a virtual sample first\n" if keys %samples > 1;
+    print STDERR "WARNING: more than one sample found; should use specimen-level biosample or create a virtual sample first\n" if keys %samples > 1;
     $manifest{SAMPLE} = join(",",keys %samples);
 }
 
