@@ -5,7 +5,6 @@ use Bio::Seq;
 use Bio::SeqIO;
 use Bio::DB::Fasta;
 
-
 # Need to add GFF2 FITS (geneid-like) output
 my $fa= 0;
 my $verbose = 0;
@@ -54,14 +53,9 @@ my $sobj = $db->get_Seq_by_id($seqname);
 my $seq = $sobj->seq;
 
 if($strand eq '+'){
-    #my $dna = SeqOp::get_seq_BioDBFasta($db,$id,$base,$base+$window-1,'+');
-    #my $dna = $sobj->subseq($base,$base+$window-1);
     my $dna = substr($seq,$start-2+$frame,$end-$start+1);
     print(">$seqname:",$start-1+$frame,"-",$end," cp:",compute_cp($dna,0),"\n$dna\n");
 }else{
-    #my $dna = SeqOp::get_seq_BioDBFasta($db,$id,$base,$base+$window-1,'+');
-    #my $dna = $sobj->subseq($base,$base+$window-1);
-    #my $rdna = SeqOp::get_seq_BioDBFasta($db,$id,$base,$base+$window-1,'-');
     my $dna = substr($seq,$start-1,$end-$start+2-$frame);
     my $rdna = reverse($dna);
     $rdna =~ tr/ACGTacgt/TGCATGCA/;
