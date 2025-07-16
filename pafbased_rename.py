@@ -9,7 +9,7 @@ import re
 #Contact email: jessica.gomez@cnag.eu
 #Date:20250612
 
-def parse_paf_and_get_longest_alignments(paf_file, match):
+def parse_paf_and_get_longest_alignments(paf_file, match, sex_chroms):
     """
     Parses a PAF file and returns the longest alignment per target sequence.
 
@@ -41,7 +41,7 @@ def parse_paf_and_get_longest_alignments(paf_file, match):
                     strand = hit[4]
                     
                     if match:
-                        if match not in target_name or "unloc" in line:
+                        if match not in query_name or "unloc" in line or target_name in sex_chroms or query_name in sex_chroms:
                             continue
                     
                 except ValueError:
@@ -52,8 +52,10 @@ def parse_paf_and_get_longest_alignments(paf_file, match):
                     sys.exit(f"Error: Negative alignment length on line {line_num}.")
                 if mqual != 60:
                     continue
-                if (target_name not in longest_alignments or alignment_length > longest_alignments[target_name][1]):
-                    longest_alignments[target_name] = (query_name, alignment_length, strand)
+              
+                if (query_name not in longest_alignments or alignment_length > longest_alignments[query_name][1]):
+                    longest_alignments[query_name] = (target_name, alignment_length, strand)
+
     except Exception as e:
         sys.exit(f"Error reading file: {e}")
 
@@ -90,12 +92,17 @@ def process_fasta(fasta_path, alignments, output_fasta_path):
     except Exception as e:
         sys.exit(f"Error reading FASTA file: {e}")
 
+    for i in alignments:
+        print (i, alignments[i])
     for keys in query_dict:
         if keys in alignments:
             args.fasta_output.write(">" + alignments[keys][0] + '\n')
         elif "unloc" in keys:
             name = keys.split("_unloc")
-            args.fasta_output.write(">" + alignments[name[0]][0] + "_unloc" + name[1] + '\n')
+            if name[0] in alignments:
+                args.fasta_output.write(">" + alignments[name[0]][0] + "_unloc" + name[1] + '\n')
+            else:
+                args.fasta_output.write(">" + keys+ '\n')
         else: 
             args.fasta_output.write(">" + keys+ '\n')
         args.fasta_output.write(query_dict[keys] + "\n")
@@ -122,6 +129,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-p", "--paf-file",  required=True, help="PAF file from minimap2. Names in the query assembly will be replaced by corresponding sequence names in the target assembly.")
     parser.add_argument("-f", "--fasta-file", required=False, help="fasta query file")
+    parser.add_argument("-x", "--sex_chroms", required=False, nargs="+", help="list of chromosomes that you do not want to rename")
     parser.add_argument("-k", "--lookup-table", required=True, help="Output file that will contain the correspondance between the two assemblies")
     parser.add_argument("-o", "--fasta-output", required=False, type=argparse.FileType('w'), default=sys.stdout,
                         help="Output fasta file that will contain the renamed sequences, reverse complemented if aligned in the negative strand. Default: stdout")
@@ -136,7 +144,11 @@ if __name__ == "__main__":
         output_fasta_path = args.fasta_output
     lookup_path = args.lookup_table
     match=args.match_seqs
-    alignments = parse_paf_and_get_longest_alignments(paf_path, match)
+    sex_chroms = []
+    if args.sex_chroms:
+        sex_chroms = args.sex_chroms
+    alignments = parse_paf_and_get_longest_alignments(paf_path, match, sex_chroms)
+
 
     if fasta_path:
         process_fasta(fasta_path, alignments, args.fasta_output)
