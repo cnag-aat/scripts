@@ -3,7 +3,7 @@
 # script AGPFILE FASTA
 
 use strict;
-use lib "/home/devel/talioto/myperlmods/";
+use lib "/home/groups/assembly/talioto/myperlmods/";
 use Bio::DB::Fasta;
 use Bio::Seq;
 use Bio::SeqIO; 

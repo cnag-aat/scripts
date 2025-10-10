@@ -8,7 +8,8 @@ use Getopt::Long;
 ##
 ## script to convert coordinates from a gff3 with an agp or lookup table.
 ##
-## Author: Jèssica Gómez
+## Author: Jessica Gomez
+## Email: jessica.gomez@cnag.eu
 ## 
 #############################################################
 

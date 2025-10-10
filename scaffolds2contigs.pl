@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 use strict;
-use lib "/home/devel/talioto/myperlmods";
-use lib "/home/devel/talioto/myperlmods/Bio";
+use lib "/home/groups/assembly/talioto/myperlmods";
+use lib "/home/groups/assembly/talioto/myperlmods/Bio";
 use SeqOp;
 use Getopt::Long;
 use File::Basename qw( fileparse );
