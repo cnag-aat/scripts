@@ -3,8 +3,7 @@
 use strict;
 use warnings;
 use Getopt::Long;
-use lib "/home/devel/talioto/myperlmods/";
-use lib "/home/devel/talioto/myperlmods/Bio/";
+use lib "/home/groups/assembly/talioto/myperlmods/";
 use Bio::DB::Fasta;
 
 my $fasta = 0;
