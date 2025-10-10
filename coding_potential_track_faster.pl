@@ -1,8 +1,9 @@
 #!/usr/bin/env perl
 use strict;
 use Getopt::Long;
-use lib "/project/devel/aateam/perlmods";
-use lib "/apps/BIOPERL/1.6.1/lib/perl5";
+# conda activate /software/assembly/conda/perl-bioperl-1.7.8
+#use lib "/project/devel/aateam/perlmods";
+use lib "/scratch_isilon/groups/assembly/talioto/myperlmods";
 use Bio::Seq;
 use Bio::SeqIO;
 use Bio::DB::Fasta;
@@ -12,7 +13,7 @@ use SeqOp;
 # Need to add GFF2 FITS (geneid-like) output
 my $fa= 0;
 my $verbose = 0;
-my $geneid_param = "/home/devel/talioto/param/human.090903.param";
+my $geneid_param = "~/repos/geneid/param/human.101007.scoring.param";
 my $frame = 1;
 my $strand = "+";
 my $window = 60;
