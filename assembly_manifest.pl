@@ -23,10 +23,10 @@ my %manifest = ();
 # UNLOCALISED_LIST        ibLobSubt1.1.unlocalized.tsv.gz 
 $manifest{ASSEMBLY_TYPE}='isolate';
 $manifest{PLATFORM}='ONT, Illumina, Omni-C';
-$manifest{PROGRAM}='NEXTDENOVO, HYPO, PURGE_DUPS, YAHS';
+$manifest{PROGRAM}='HIFIASM, YAHS';
 $manifest{MINGAPLENGTH}='100';
 $manifest{MOLECULETYPE}='genomic DNA';
-my $assembler = 'NEXTDENOVO, HYPO, PURGE_DUPS, YAHS';
+my $assembler = 'HIFIASM, YAHS';
 my $assembly_fasta = 0;
 my $chrlist = 0;
 my $unlocs = 0;
@@ -43,7 +43,7 @@ my $runstring = '';
 GetOptions(
     'name:s' => \$name,
 	'assembly|fasta|fa|f:s' => \$assembly_fasta,
-    'MT|mito|mt:s' => \$mito_fasta,
+    'MT|mito|mt|m:s' => \$mito_fasta,
 	'chr:s' => \$chrlist,
 #	'unlocs|unloc|u:s' => \$unlocs,
     'cov:s' => \$coverage,
@@ -98,7 +98,7 @@ if ($given_runs){
             $samples{$fields[2]}++;
         }
     }
-    if ($linecount < 2 || not scalar @runs){
+    if ($linecount < 1 || not scalar @runs){
         $runstring = '';
         print STDERR "WARNING: no runs found\n";
     }else{
