@@ -2,6 +2,7 @@
 
 use Data::Dumper;
 use Getopt::Long;
+use Pod::Usage;
 use File::Basename qw( fileparse );
 my $printhelp = 0;
 my %manifest = ();
@@ -40,6 +41,11 @@ my $given_assembly_project = 0;
 my $given_runs = 0;
 my $assembly_project = 0;
 my $runstring = '';
+my $pb = 0;
+my $LR_PLATFORM = "OXFORD_NANOPORE";
+my $man = 0;
+my $help = 0;
+
 GetOptions(
     'name:s' => \$name,
 	'assembly|fasta|fa|f:s' => \$assembly_fasta,
@@ -53,10 +59,25 @@ GetOptions(
     'sample:s' => \$biosample,
     'project:s' => \$given_assembly_project,
     'runs:s' => \$given_runs,
-    'h|help'   => \$printhelp
-);
+    'hifi|pb|pacbio' => \$pb,
+    'help|?' => \$help, 
+) or pod2usage(2);
+
+pod2usage(1) if $help;
+# # Check required
+# pod2usage("$0: --name is required\n")     unless defined $name;
+# pod2usage("$0: --assembly is required\n") unless defined $assembly_fasta;
+# pod2usage("$0: --chr is required\n")      unless defined $chrlist;
+# pod2usage("$0: --cov is required\n")      unless defined $coverage;
+# pod2usage("$0: --species is required\n")  unless defined $species;
+# pod2usage("$0: --project is required\n")  unless defined $given_assembly_project;
+
+
+
 $manifest{ASSEMBLYNAME}=$name;
 $manifest{COVERAGE}=$coverage;
+
+if ($pb){ $LR_PLATFORM = "PACBIO"; }
 # get sample and runs from https://genomes.cnag.cat/erga-stream/ena_runs/
 # get project from 
 die "first run:\n conda activate /software/assembly/conda/gfastats-1.3.6-3/\n" if system("gfastats");
@@ -82,7 +103,7 @@ if ($given_runs){
     chomp $data_project;
     print "$data_project\n";
 
-    my $runfetchcmd = "curl -X 'GET' 'https://www.ebi.ac.uk/ena/portal/api/search?query=study_tree%28$data_project%29&result=read_run&fields=instrument_platform,run_accession,sample_accession&limit=0' | grep OXFORD_NANOPORE | ";
+    my $runfetchcmd = "curl -X 'GET' 'https://www.ebi.ac.uk/ena/portal/api/search?query=study_tree%28$data_project%29&result=read_run&fields=instrument_platform,run_accession,sample_accession&limit=0' | grep $LR_PLATFORM | ";
     print "$runfetchcmd\n";
     open RUNS, $runfetchcmd or die $!;
     my @runs = ();
@@ -115,7 +136,12 @@ if($biosample){
 
 $manifest{RUN_REF} = $runstring;
 $manifest{PROGRAM}= uc($assembler);
-$manifest{PLATFORM}= 'ONT, Illumina, '.$hic_protocol;
+
+if ($pb){
+    $manifest{PLATFORM}= 'PacBio HiFi, '.$hic_protocol;
+}else{
+    $manifest{PLATFORM}= 'ONT, Illumina, '.$hic_protocol;
+}
 my $mingap = 1;
 if ($assembly_fasta !~/fasta/){
     my $rename = $assembly_fasta;
@@ -150,7 +176,8 @@ $manifest{FASTA} = "$name.asm.fa.gz";
 `gzip -f $name.chromosome.list.txt`;
 $manifest{CHROMOSOME_LIST} = "$name.chromosome.list.txt.gz";
 
-my $unlocs = `grep -c unloc $chrlist`;  #| gzip > qqGluDors1.3.unlocalized.txt `
+$unlocs = `grep -c unloc $chrlist`;
+#| gzip > qqGluDors1.3.unlocalized.txt
 chomp $unlocs;
 print STDERR "$unlocs unlocs found\n";
 if (scalar $unlocs){
@@ -180,3 +207,87 @@ sub print_manifest{
     print "java -jar /software/assembly/src/webin-cli-validator/webin-cli-8.1.0.jar -context genome -userName WEBIN-1543 -password BGWSEi8y -manifest $manifestfile -centerName 'CNAG'   -outputDir submit -submit \n";
 
 }
+
+__END__
+
+=head1 NAME
+
+assembly_manifest.pl - Create an ENA assembly manifest file
+
+=head1 SYNOPSIS
+
+assembly_manifest.pl [options]
+
+=head1 OPTIONS
+
+=head2 Required Options
+
+=over 8
+
+=item B<-name> I<name>
+
+Assign assembly name, e.g. C<mHomSap1.1>.
+
+=item B<-assembly> I<fasta.fa>
+
+Nuclear assembly FASTA file.
+
+=item B<-chr> I<chrlist.txt>
+
+Chromosome list output by pretext-to-tpf.
+
+=item B<-cov> I<cov>
+
+Coverage (integer value) by unfiltered long reads.
+
+=item B<-species> I<binomial species>
+
+Species name, e.g. C<Homo sapiens>.
+
+=item B<-project> I<assembly_project>
+
+Bioproject accession for the assembly.
+
+=back
+
+=head2 Optional Options
+
+=over 8
+
+=item B<-help>, B<-?>
+
+Show a brief help message and exit.
+
+=item B<-MT> I<mito.fa>
+
+Mitogenome assembly FASTA file.
+
+=item B<-assembler> I<programs>
+
+List of assembly programs. Default: C<HIFIASM, YAHS>.
+
+=item B<-hic> I<protocol>
+
+Hi-C protocol. Default: C<Omni-C>.
+
+=item B<-sample> I<biosample>
+
+Biosample accession corresponding to long reads.
+
+=item B<-runs> I<run accessions>
+
+Run accessions (comma-separated list).
+
+=item B<-hifi>, B<-pb>, B<-pacbio>
+
+Set if submitting a PacBio-based assembly.
+
+=back
+
+=head1 DESCRIPTION
+
+B<assembly_manifest.pl> creates an assembly manifest file for submission to the ENA.
+It validates and formats metadata describing the assembly, sequencing data,
+and experimental details.
+
+=cut
