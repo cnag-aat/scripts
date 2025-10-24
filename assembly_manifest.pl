@@ -147,10 +147,10 @@ if ($assembly_fasta !~/fasta/){
     my $rename = $assembly_fasta;
     $rename =~ s/fa/fasta/;
     `ln -s $assembly_fasta $rename`;
-    $mingap = `gfastats $rename | grep 'Smallest gap' | sed 's/.*\s: //'`;
+    $mingap = `gfastats $rename | grep 'Smallest gap' | sed 's/.* : //'`;
     unlink($rename);
 }else{
-    $mingap = `gfastats $assembly_fasta | grep 'Smallest gap' | sed 's/.*\s: //'`;
+    $mingap = `gfastats $assembly_fasta | grep 'Smallest gap' | sed 's/.* : //'`;
 }
 chomp $mingap;
 $manifest{MINGAPLENGTH}=$mingap;
