@@ -158,7 +158,7 @@ if [ "$INFO_ONLY" = true ]; then
     
     # Detailed breakdown
     echo "DETAILED BREAKDOWN:"
-    echo "Platform | Strategy | Samples | Files Available"
+    echo "Platform | Strategy |   Runs  | Files Available"
     echo "---------|----------|---------|----------------"
     jq -r 'group_by(.instrument_platform + "|" + .library_strategy) | .[] | 
            .[0].instrument_platform + " | " + 
