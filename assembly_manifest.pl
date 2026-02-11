@@ -81,10 +81,10 @@ if ($pb){ $LR_PLATFORM = "PACBIO"; }
 # get sample and runs from https://genomes.cnag.cat/erga-stream/ena_runs/
 # get project from 
 die "first run:\n conda activate /software/assembly/conda/gfastats-1.3.6-3/\n" if system("gfastats");
-die "Mandatory arguments: -name -fasta -chr -cov -species -sample\n" if !($name && $assembly_fasta && $chrlist && $coverage &&  $species && $biosample);
+die "Mandatory arguments: -name -fasta -chr -cov -species -sample\n" if !($name && $assembly_fasta && $coverage &&  $species && $biosample);
 die "$mito_fasta doesn't exist" if $mito_fasta and ! -e $mito_fasta;
 die "$assembly_fasta doesn't exist" if $assembly_fasta and ! -e $assembly_fasta;
-die "$chrlist doesn't exist" if $chrlist and ! -e $chrlist;
+#die "$chrlist doesn't exist" if $chrlist and ! -e $chrlist;
 $manifest{ASSEMBLYNAME}=$name;
 
 print STDERR "Finding study, runs and samples...\n";
@@ -147,10 +147,10 @@ if ($assembly_fasta !~/fasta/){
     my $rename = $assembly_fasta;
     $rename =~ s/fa/fasta/;
     `ln -s $assembly_fasta $rename`;
-    $mingap = `gfastats $rename | grep 'Smallest gap' | sed 's/.* : //'`;
+    $mingap = `gfastats $rename | grep 'Smallest gap' | sed 's/.*: //'`;
     unlink($rename);
 }else{
-    $mingap = `gfastats $assembly_fasta | grep 'Smallest gap' | sed 's/.* : //'`;
+    $mingap = `gfastats $assembly_fasta | grep 'Smallest gap' | sed 's/.*: //'`;
 }
 chomp $mingap;
 $manifest{MINGAPLENGTH}=$mingap;
@@ -159,7 +159,9 @@ $manifest{MINGAPLENGTH}=$mingap;
 # grep -v unloc qqGluDors1.3.chromosome.list.csv | sed 's/,/\t/g' | sed 's/yes/chromosome/' > qqGluDors1.3.chromosome.list.txt 
 # echo -e  "qqGluDors_MT\tMT\tcircular-chromosome\tMitochondrion" >> qqGluDors1.3.chromosome.list.txt 
 # gzip qqGluDors1.3.chromosome.list.txt 
-`grep -v unloc $chrlist | sed 's/,/\t/g' | sed 's/yes/chromosome/' > $name.chromosome.list.txt`;
+if ($chrlist){
+    `grep -v unloc $chrlist | sed 's/,/\t/g' | sed 's/yes/chromosome/' > $name.chromosome.list.txt`;
+}
 die "$assembly_fasta cannot be named $name.asm.fa.gz\n" if $assembly_fasta eq "$name.asm.fa.gz";
 die "$chrlist cannot be named $name.asm.fa.gz\n" if $chrlist eq "$name.chromosome.list.txt";
 if ($mito_fasta){
@@ -174,7 +176,10 @@ if ($mito_fasta){
 $manifest{FASTA} = "$name.asm.fa.gz";
 
 `gzip -f $name.chromosome.list.txt`;
-$manifest{CHROMOSOME_LIST} = "$name.chromosome.list.txt.gz";
+if($chrlist){
+    $manifest{CHROMOSOME_LIST} = "$name.chromosome.list.txt.gz";
+}
+
 
 $unlocs = `grep -c unloc $chrlist`;
 #| gzip > qqGluDors1.3.unlocalized.txt
@@ -232,10 +237,6 @@ Assign assembly name, e.g. C<mHomSap1.1>.
 
 Nuclear assembly FASTA file.
 
-=item B<-chr> I<chrlist.txt>
-
-Chromosome list output by pretext-to-tpf.
-
 =item B<-cov> I<cov>
 
 Coverage (integer value) by unfiltered long reads.
@@ -246,13 +247,21 @@ Species name, e.g. C<Homo sapiens>.
 
 =item B<-project> I<assembly_project>
 
-Bioproject accession for the assembly.
+Assembly project accession number
+
+=item B<-sample> I<biosample>
+
+Biosample accession corresponding to long reads.
 
 =back
 
 =head2 Optional Options
 
 =over 8
+
+=item B<-chr> I<chrlist.txt>
+
+Chromosome list output by pretext-to-tpf.
 
 =item B<-help>, B<-?>
 
@@ -270,9 +279,6 @@ List of assembly programs. Default: C<HIFIASM, YAHS>.
 
 Hi-C protocol. Default: C<Omni-C>.
 
-=item B<-sample> I<biosample>
-
-Biosample accession corresponding to long reads.
 
 =item B<-runs> I<run accessions>
 
