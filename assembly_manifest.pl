@@ -209,7 +209,7 @@ sub print_manifest{
     `mkdir -p submit`;
     my $manifestfile = $mani->{ASSEMBLYNAME}.".assembly_manifest.txt";
     print "Now check your manifest for errors, then run:\nconda activate /software/assembly/conda/JAVA/\n"; 
-    print "java -jar /software/assembly/src/webin-cli-validator/webin-cli-8.1.0.jar -context genome -userName WEBIN-1543 -password BGWSEi8y -manifest $manifestfile -centerName 'CNAG'   -outputDir submit -submit \n";
+    print "java -jar /software/assembly/src/webin-cli-validator/webin-cli-9.0.0.jar -context genome -userName WEBIN-1543 -password BGWSEi8y -manifest $manifestfile -centerName 'CNAG'   -outputDir submit -submit \n";
 
 }
 
