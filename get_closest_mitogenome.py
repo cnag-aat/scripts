@@ -64,7 +64,7 @@ def search_mitogenomes_for_taxid(taxid, rank_name, sci_name):
     query = (
         f"txid{taxid}[Organism:exp] "
         f"AND mitochondrion[Filter] "
-        f"AND (complete genome[Title] OR complete sequence[Title])"
+        f"AND (complete genome[Title]" # OR complete sequence[Title])"
     )
     print(f"  Searching at {rank_name} ({sci_name}, txid{taxid})...")
 
