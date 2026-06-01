@@ -6,12 +6,18 @@
 # that are internally phased but NOT interchromosomally phased (typical output of
 # hifiasm/Flye + Omni-C curation in PretextViewAI, processed with pretext-to-asm).
 #
-# For each chromosome (SUPER) the better copy -- judged by a tunable weighted
+# For each autosome (SUPER) the better copy -- judged by a tunable weighted
 # composite of BUSCO completeness, contiguity (gaps) and length -- is routed to
-# hap1; the worse copy goes to hap2. All user-named sex chromosomes are forced
-# into hap1 regardless of score. The hap1<->hap2 correspondence and orientation
-# are established from a minimap2 whole-genome alignment (hap2 -> hap1), and hap2
-# is renamed/reoriented to match hap1.
+# hap1; the worse copy goes to hap2. ALL sex chromosomes (SUPER_X*, SUPER_Y*,
+# SUPER_Z*, SUPER_W*, plus any named with --sex) are routed to hap1 regardless of
+# haplotype of origin. Sex chromosomes are matched across haplotypes by name, NOT
+# by alignment, so a Z is never cross-matched/renamed to a W.
+#
+# Autosome hap1<->hap2 correspondence and orientation come from a minimap2
+# whole-genome alignment (hap2 -> hap1). Output sequence names are the bare
+# chromosome token (e.g. SUPER_3, SUPER_W, SUPER_3_unloc_1) with the original
+# haplotype prefix stripped; the prefix/origin/orientation is recorded in the
+# lookup table.
 #
 # Replaces choose_best_super.pl. Reuses the PAF longest-alignment / revcomp logic
 # from pafbased_rename.py (Jessica Gomez-Garrido, CNAG).
@@ -27,8 +33,7 @@ import subprocess
 import sys
 
 # --------------------------------------------------------------------------- #
-# Small helpers (kept inline so the script is self-contained, mirroring
-# pafbased_rename.py).
+# Small helpers
 # --------------------------------------------------------------------------- #
 
 _COMPLEMENT = {
@@ -38,9 +43,7 @@ _COMPLEMENT = {
 }
 
 _GAP_RE = re.compile(r'[Nn]+')
-# SUPER name and optional unloc suffix, e.g. SUPER_3 or SUPER_3_unloc_2
 _UNLOC_RE = re.compile(r'^(?P<parent>.+?)_unloc.*$', re.IGNORECASE)
-# Trailing integer of a SUPER name, used for canonical ordering / numbering.
 _NUM_RE = re.compile(r'(\d+)\s*$')
 
 
@@ -57,12 +60,62 @@ def eprint(*args, **kwargs):
 
 
 # --------------------------------------------------------------------------- #
+# Chromosome-token helpers
+#
+# Sequences are named like "rHemHip.H1.SUPER_3" or "rHemHip.H1.SUPER_W_unloc_1".
+# The *token* is the part starting at the match prefix ("SUPER_..."); the
+# *parent token* drops any _unloc suffix; the *prefix* is everything before the
+# token (the per-haplotype label we strip from output and keep in the lookup).
+# --------------------------------------------------------------------------- #
+
+def chrom_token(name, match):
+    i = name.find(match)
+    return name[i:] if i != -1 else None
+
+
+def parent_token(token):
+    if token is None:
+        return None
+    m = _UNLOC_RE.match(token)
+    return m.group('parent') if m else token
+
+
+def name_prefix(name, match):
+    i = name.find(match)
+    return name[:i] if i != -1 else ''
+
+
+def member_suffix(member_token, src_parent):
+    """The part of a member token after its parent (e.g. '_unloc_1' or '')."""
+    return member_token[len(src_parent):]
+
+
+def super_num(token):
+    m = _NUM_RE.search(token)
+    return int(m.group(1)) if m else 10 ** 9
+
+
+def make_sex_test(match, sex_prefixes, extra_names, auto):
+    """Return is_sex(parent_token) -> bool."""
+    extra = set(extra_names or [])
+    pat = None
+    if auto and sex_prefixes:
+        letters = ''.join(re.escape(p) for p in sex_prefixes)
+        pat = re.compile(rf'^{re.escape(match)}_[{letters}]\d*$', re.IGNORECASE)
+
+    def is_sex(ptoken):
+        if ptoken in extra:
+            return True
+        return bool(pat and pat.match(ptoken))
+
+    return is_sex
+
+
+# --------------------------------------------------------------------------- #
 # FASTA parsing + per-scaffold stats
 # --------------------------------------------------------------------------- #
 
 def read_fasta(path):
-    """Yield (name, sequence) tuples. name is the first whitespace-delimited
-    token of the header (matches how minimap2 names sequences in a PAF)."""
     if not os.path.isfile(path):
         sys.exit(f"Error: FASTA not found: {path}")
     name, chunks = None, []
@@ -80,68 +133,35 @@ def read_fasta(path):
 
 
 def gap_stats(seq):
-    """Return (gap_count, gap_bases, largest_ungapped_contig) for a sequence."""
-    gap_count = 0
-    gap_bases = 0
+    gap_count = gap_bases = 0
     for m in _GAP_RE.finditer(seq):
         gap_count += 1
         gap_bases += m.end() - m.start()
-    # largest stretch of non-N as a proxy for within-SUPER contig contiguity
-    largest = 0
-    for piece in _GAP_RE.split(seq):
-        if len(piece) > largest:
-            largest = len(piece)
+    largest = max((len(p) for p in _GAP_RE.split(seq)), default=0)
     return gap_count, gap_bases, largest
 
 
-def parent_super(name, match):
-    """Return the canonical SUPER this scaffold belongs to, or None if it is an
-    unplaced scaffold. SUPER_n -> SUPER_n; SUPER_n_unloc_x -> SUPER_n."""
-    if match not in name:
-        return None
-    m = _UNLOC_RE.match(name)
-    if m:
-        return m.group('parent')
-    return name
-
-
-def super_num(name):
-    m = _NUM_RE.search(name)
-    return int(m.group(1)) if m else 10 ** 9
-
-
 def parse_fasta_stats(path, match):
-    """Single pass over a haplotype FASTA.
+    """Single pass over a haplotype FASTA. Keys SUPERs by parent token.
 
-    Returns a dict:
-      records[name] = {seq, length, gap_count, gap_bases, largest_contig,
-                       parent, is_unloc}
-    plus:
-      supers[parent] = aggregated stats over the SUPER + its unloc children
-      unplaced = [names of scaffolds with no `match` prefix]
+    Returns:
+      records[fullname] = {seq, length, token}
+      supers[parent_token] = {members:[fullnames], length, gap_count, gap_bases,
+                              largest_contig, busco, prefix}
+      unplaced = [fullnames without the match prefix]
     """
-    records = {}
-    supers = {}
-    unplaced = []
+    records, supers, unplaced = {}, {}, []
     for name, seq in read_fasta(path):
-        gc, gb, largest = gap_stats(seq)
-        parent = parent_super(name, match)
-        is_unloc = parent is not None and parent != name
-        records[name] = {
-            'seq': seq,
-            'length': len(seq),
-            'gap_count': gc,
-            'gap_bases': gb,
-            'largest_contig': largest,
-            'parent': parent,
-            'is_unloc': is_unloc,
-        }
-        if parent is None:
+        token = chrom_token(name, match)
+        records[name] = {'seq': seq, 'length': len(seq), 'token': token}
+        if token is None:
             unplaced.append(name)
             continue
-        agg = supers.setdefault(parent, {
-            'members': [], 'length': 0, 'gap_count': 0,
-            'gap_bases': 0, 'largest_contig': 0, 'busco': 0,
+        gc, gb, largest = gap_stats(seq)
+        ptoken = parent_token(token)
+        agg = supers.setdefault(ptoken, {
+            'members': [], 'length': 0, 'gap_count': 0, 'gap_bases': 0,
+            'largest_contig': 0, 'busco': 0, 'prefix': name_prefix(name, match),
         })
         agg['members'].append(name)
         agg['length'] += len(seq)
@@ -151,12 +171,15 @@ def parse_fasta_stats(path, match):
     return records, supers, unplaced
 
 
+def members_in_order(stats):
+    return sorted(stats['members'], key=lambda n: (1 if '_unloc' in n.lower() else 0, n))
+
+
 # --------------------------------------------------------------------------- #
 # minimap2 + correspondence
 # --------------------------------------------------------------------------- #
 
 def run_minimap2(hap1, hap2, preset, threads, out_paf, dry_run):
-    """Align hap2 (query) -> hap1 (target). Returns the command list."""
     cmd = ['minimap2', '-c', '-x', preset, '-t', str(threads), hap1, hap2]
     if dry_run:
         eprint('[dry-run] ' + ' '.join(cmd) + f' > {out_paf}')
@@ -171,21 +194,23 @@ def run_minimap2(hap1, hap2, preset, threads, out_paf, dry_run):
     return cmd
 
 
-def correspond_supers(paf_file, match, min_mapq=60):
-    """Adapt pafbased_rename.py longest-alignment logic.
+def correspond_supers(paf_file, match, is_sex, min_mapq=60):
+    """Longest high-MAPQ block per query token -> target token.
 
-    For each hap2 SUPER (query), find the hap1 SUPER (target) holding its single
-    longest high-MAPQ aligned block, and the strand of that block.
+    Sex chromosomes are EXCLUDED from autosome correspondence so they are never
+    cross-matched (e.g. Z<->W). A separate self_strand map records orientation
+    for same-token alignments (used to reorient paired sex chromosomes).
 
     Returns:
-      h2_to_h1[h2_super] = {'h1': h1_super, 'strand': '+/-', 'len': aln_len}
-      h1_claims[h1_super] = [h2_supers...]  (to detect collisions)
+      h2_to_h1[h2_parent] = {'h1': h1_parent, 'strand': '+/-', 'len': aln_len}
+      h1_claims[h1_parent] = [h2_parents...]
+      self_strand[parent]  = '+/-' for the longest same-token block
     """
     if not os.path.isfile(paf_file):
         sys.exit(f"Error: PAF not found: {paf_file}")
-    best = {}  # h2_super -> (h1_super, aln_len, strand)
+    best, self_best = {}, {}
     with open(paf_file) as fh:
-        for ln, line in enumerate(fh, 1):
+        for line in fh:
             hit = line.rstrip('\n').split('\t')
             if len(hit) < 12:
                 continue
@@ -196,20 +221,23 @@ def correspond_supers(paf_file, match, min_mapq=60):
                 continue
             if mapq < min_mapq:
                 continue
-            qp = parent_super(q, match)
-            tp = parent_super(t, match)
+            qp = parent_token(chrom_token(q, match))
+            tp = parent_token(chrom_token(t, match))
             if qp is None or tp is None:
                 continue
-            # aggregate at the SUPER level using the longest single block
             aln_len = tend - tstart
+            if qp == tp and (qp not in self_best or aln_len > self_best[qp][0]):
+                self_best[qp] = (aln_len, strand)
+            if is_sex(qp) or is_sex(tp):
+                continue
             if qp not in best or aln_len > best[qp][1]:
                 best[qp] = (tp, aln_len, strand)
-    h2_to_h1 = {}
-    h1_claims = {}
+    h2_to_h1, h1_claims = {}, {}
     for h2, (h1, aln_len, strand) in best.items():
         h2_to_h1[h2] = {'h1': h1, 'strand': strand, 'len': aln_len}
         h1_claims.setdefault(h1, []).append(h2)
-    return h2_to_h1, h1_claims
+    self_strand = {p: s for p, (_l, s) in self_best.items()}
+    return h2_to_h1, h1_claims, self_strand
 
 
 # --------------------------------------------------------------------------- #
@@ -234,7 +262,6 @@ def run_busco(fasta, lineage, threads, out_path, run_name, dry_run):
 
 
 def find_full_table(run_dir):
-    """Locate full_table.tsv inside a BUSCO run dir (run_<lineage>/full_table.tsv)."""
     direct = os.path.join(run_dir, 'full_table.tsv')
     if os.path.isfile(direct):
         return direct
@@ -245,11 +272,7 @@ def find_full_table(run_dir):
 
 
 def busco_per_super(run_dir, match):
-    """Parse full_table.tsv -> count Complete (incl. Duplicated) BUSCOs per SUPER.
-
-    full_table.tsv columns: Busco id, Status, Sequence, gene_start, gene_end, ...
-    The Sequence field is the scaffold name (may carry a :start-end suffix in
-    some BUSCO/miniprot versions, which we strip)."""
+    """Parse full_table.tsv -> Complete (incl. Duplicated) BUSCOs per parent token."""
     table = find_full_table(run_dir)
     if table is None:
         eprint(f"Warning: no full_table.tsv under {run_dir}; treating BUSCO as 0.")
@@ -260,16 +283,12 @@ def busco_per_super(run_dir, match):
             if line.startswith('#') or not line.strip():
                 continue
             f = line.rstrip('\n').split('\t')
-            if len(f) < 3:
+            if len(f) < 3 or f[1] not in ('Complete', 'Duplicated'):
                 continue
-            status, seq = f[1], f[2]
-            if status not in ('Complete', 'Duplicated'):
+            ptoken = parent_token(chrom_token(f[2].split(':')[0], match))
+            if ptoken is None:
                 continue
-            seq = seq.split(':')[0]
-            parent = parent_super(seq, match)
-            if parent is None:
-                continue
-            counts[parent] = counts.get(parent, 0) + 1
+            counts[ptoken] = counts.get(ptoken, 0) + 1
     return counts
 
 
@@ -278,7 +297,6 @@ def busco_per_super(run_dir, match):
 # --------------------------------------------------------------------------- #
 
 def _norm(a, b):
-    """Min-max normalize two values to [0,1] within the pair. Equal -> (1,1)."""
     if a == b:
         return 1.0, 1.0
     lo, hi = min(a, b), max(a, b)
@@ -286,32 +304,14 @@ def _norm(a, b):
 
 
 def score_pair(s1, s2, weights):
-    """Score hap1 SUPER stats `s1` against hap2 SUPER stats `s2`.
-
-    Each metric is normalized within the pair, then combined. Higher = better.
-    Contiguity uses negative gap_count (fewer gaps better), tie-broken into the
-    largest-ungapped-contig term via the length component already capturing size.
-    Returns (score1, score2, components) where components is a dict for the report.
-    """
     wb, wc, wl = weights
-    # BUSCO (higher better)
     b1n, b2n = _norm(s1['busco'], s2['busco'])
-    # contiguity (fewer gaps better -> negate); fall back to largest contig if
-    # gap counts tie.
     if s1['gap_count'] == s2['gap_count']:
         c1n, c2n = _norm(s1['largest_contig'], s2['largest_contig'])
     else:
         c1n, c2n = _norm(-s1['gap_count'], -s2['gap_count'])
-    # length (longer better)
     l1n, l2n = _norm(s1['length'], s2['length'])
-    score1 = wb * b1n + wc * c1n + wl * l1n
-    score2 = wb * b2n + wc * c2n + wl * l2n
-    comp = {
-        'busco_n': (b1n, b2n),
-        'contig_n': (c1n, c2n),
-        'len_n': (l1n, l2n),
-    }
-    return score1, score2, comp
+    return wb * b1n + wc * c1n + wl * l1n, wb * b2n + wc * c2n + wl * l2n
 
 
 # --------------------------------------------------------------------------- #
@@ -320,8 +320,7 @@ def score_pair(s1, s2, weights):
 
 def write_record(out_fh, header, seq, rc=False):
     out_fh.write('>' + header + '\n')
-    s = revcomp(seq) if rc else seq
-    out_fh.write(format_sequence(s) + '\n')
+    out_fh.write(format_sequence(revcomp(seq) if rc else seq) + '\n')
 
 
 # --------------------------------------------------------------------------- #
@@ -329,25 +328,34 @@ def write_record(out_fh, header, seq, rc=False):
 # --------------------------------------------------------------------------- #
 
 def common_prefix(a, b):
-    base_a = os.path.basename(a)
-    base_b = os.path.basename(b)
+    ba, bb = os.path.basename(a), os.path.basename(b)
     i = 0
-    while i < min(len(base_a), len(base_b)) and base_a[i] == base_b[i]:
+    while i < min(len(ba), len(bb)) and ba[i] == bb[i]:
         i += 1
-    pref = base_a[:i].rstrip('_.-')
-    return pref or 'assembly'
+    pref = ba[:i].rstrip('_.-')
+    # strip a trailing haplotype tag like ".H" (rHemHip.H1/.H2 -> rHemHip.H -> rHemHip)
+    if pref.endswith('.H'):
+        pref = pref[:-2]
+    return pref.rstrip('_.-') or 'assembly'
 
 
 def main():
     p = argparse.ArgumentParser(
-        description="Assign the best SUPER of each chromosome to a hap1 reference "
-                    "and the worse to hap2, confirming naming/orientation via "
-                    "minimap2 and scoring with BUSCO + contiguity + length.")
+        description="Assign the best SUPER of each autosome to a hap1 reference and "
+                    "the worse to hap2 (scored by BUSCO + contiguity + length), routing "
+                    "ALL sex chromosomes to hap1. Confirms autosome naming/orientation "
+                    "via minimap2; sex chromosomes are matched by name, never alignment.")
     p.add_argument('-1', '--hap1', required=True, help="Haplotype 1 scaffolded FASTA")
     p.add_argument('-2', '--hap2', required=True, help="Haplotype 2 scaffolded FASTA")
     p.add_argument('-l', '--lineage', help="BUSCO lineage (required unless --no-busco)")
     p.add_argument('-x', '--sex', nargs='+', default=[],
-                   help="SUPER names always routed to hap1 (e.g. SUPER_X SUPER_Y)")
+                   help="Extra SUPER tokens to treat as sex chromosomes (e.g. SUPER_B1). "
+                        "Combined with auto-detection of SUPER_X*/Y*/Z*/W*.")
+    p.add_argument('--sex-prefixes', nargs='+', default=['X', 'Y', 'Z', 'W'],
+                   help="Single-letter chromosome prefixes auto-classified as sex "
+                        "(default: X Y Z W). SUPER_<letter><digits?> matches.")
+    p.add_argument('--no-auto-sex', action='store_true',
+                   help="Disable pattern-based sex detection; use only --sex names.")
     p.add_argument('-p', '--prefix', help="Output basename (default: common prefix of inputs)")
     p.add_argument('-o', '--outdir', default='.', help="Output directory (default: .)")
     p.add_argument('-t', '--threads', type=int, default=8, help="Threads (default: 8)")
@@ -370,115 +378,119 @@ def main():
 
     os.makedirs(args.outdir, exist_ok=True)
     prefix = args.prefix or common_prefix(args.hap1, args.hap2)
-    sex_set = set(args.sex)
     weights = (args.w_busco, args.w_contig, args.w_len)
+    is_sex = make_sex_test(args.match, args.sex_prefixes, args.sex, not args.no_auto_sex)
 
-    # 1. per-haplotype stats
+    # 1. per-haplotype stats (keyed by parent token)
     eprint(f"[parse] {args.hap1}")
     rec1, sup1, unp1 = parse_fasta_stats(args.hap1, args.match)
     eprint(f"[parse] {args.hap2}")
     rec2, sup2, unp2 = parse_fasta_stats(args.hap2, args.match)
 
-    # 2. minimap2 + correspondence
+    # 2. minimap2 + autosome correspondence (sex excluded)
     paf = args.paf or os.path.join(args.outdir, f"{prefix}.hap2_to_hap1.paf")
     if args.paf and os.path.isfile(args.paf):
         eprint(f"[minimap2] reusing existing PAF: {args.paf}")
     else:
-        run_minimap2(args.hap1, args.hap2, args.minimap2_preset,
-                     args.threads, paf, args.dry_run)
+        run_minimap2(args.hap1, args.hap2, args.minimap2_preset, args.threads, paf, args.dry_run)
     if args.dry_run and not os.path.isfile(paf):
-        h2_to_h1, h1_claims = {}, {}
+        h2_to_h1, h1_claims, self_strand = {}, {}, {}
     else:
-        h2_to_h1, h1_claims = correspond_supers(paf, args.match, args.min_mapq)
+        h2_to_h1, h1_claims, self_strand = correspond_supers(paf, args.match, is_sex, args.min_mapq)
 
-    # 3. BUSCO per haplotype -> per-SUPER complete counts
+    # 3. BUSCO per haplotype -> per-token complete counts
     if not args.no_busco:
-        run1 = args.busco_hap1
-        run2 = args.busco_hap2
+        run1, run2 = args.busco_hap1, args.busco_hap2
         if not run1:
-            run1 = run_busco(args.hap1, args.lineage, args.threads,
-                             args.outdir, f"{prefix}_hap1_busco", args.dry_run)
+            run1 = run_busco(args.hap1, args.lineage, args.threads, args.outdir,
+                             f"{prefix}_hap1_busco", args.dry_run)
         else:
             eprint(f"[busco] reusing hap1 run dir: {run1}")
         if not run2:
-            run2 = run_busco(args.hap2, args.lineage, args.threads,
-                             args.outdir, f"{prefix}_hap2_busco", args.dry_run)
+            run2 = run_busco(args.hap2, args.lineage, args.threads, args.outdir,
+                             f"{prefix}_hap2_busco", args.dry_run)
         else:
             eprint(f"[busco] reusing hap2 run dir: {run2}")
         if not (args.dry_run and not args.busco_hap1):
-            for sup, cnt in busco_per_super(run1, args.match).items():
-                if sup in sup1:
-                    sup1[sup]['busco'] = cnt
+            for tok, cnt in busco_per_super(run1, args.match).items():
+                if tok in sup1:
+                    sup1[tok]['busco'] = cnt
         if not (args.dry_run and not args.busco_hap2):
-            for sup, cnt in busco_per_super(run2, args.match).items():
-                if sup in sup2:
-                    sup2[sup]['busco'] = cnt
+            for tok, cnt in busco_per_super(run2, args.match).items():
+                if tok in sup2:
+                    sup2[tok]['busco'] = cnt
     else:
         eprint("Warning: --no-busco; scoring on contiguity + length only.")
 
     # 4 + 5. build per-chromosome rows and decide.
-    # Canonical chromosome key = the hap1 SUPER. For hap2 SUPERs we map them onto
-    # their hap1 partner via the correspondence; hap2 SUPERs with no partner stay
-    # under their own name.
+    # winner_hap = which haplotype's copy goes into the hap1 reference.
     rows = []
     used_h2 = set()
-    # iterate hap1 SUPERs in numeric order
-    for h1 in sorted(sup1, key=super_num):
+
+    # --- autosomes: hap1 tokens with a minimap2 partner, or hap1-only ---
+    for h1 in sorted([t for t in sup1 if not is_sex(t)], key=super_num):
         partners = [h2 for h2 in h2_to_h1
-                    if h2_to_h1[h2]['h1'] == h1 and h2 in sup2]
-        # choose the single best (longest aln) hap2 partner if several map here
-        h2 = None
-        strand = '+'
+                    if h2_to_h1[h2]['h1'] == h1 and h2 in sup2 and not is_sex(h2)]
         if partners:
             partners.sort(key=lambda x: h2_to_h1[x]['len'], reverse=True)
             h2 = partners[0]
             strand = h2_to_h1[h2]['strand']
             used_h2.add(h2)
-        s1 = sup1[h1]
-        s2 = sup2[h2] if h2 else None
-        is_sex = h1 in sex_set or (h2 in sex_set if h2 else False)
-
-        if s2 is None:
-            # singleton: only present in hap1
+            s1, s2 = sup1[h1], sup2[h2]
+            sc1, sc2 = score_pair(s1, s2, weights)
             rows.append({
-                'chrom': h1, 'h1_src': h1, 'h2_src': '-', 'strand': '+',
-                's1': s1, 's2': None, 'score1': None, 'score2': None,
-                'comp': None, 'is_sex': is_sex, 'flag': 'hap1_singleton',
-                'winner_hap': 1, 'collision': len(h1_claims.get(h1, [])) > 1,
+                'chrom': h1, 'kind': 'pair', 'h1': h1, 'h2': h2, 'strand': strand,
+                's1': s1, 's2': s2, 'score1': sc1, 'score2': sc2, 'is_sex': False,
+                'winner_hap': 1 if sc1 >= sc2 else 2, 'flag': '',
+                'collision': len(h1_claims.get(h1, [])) > 1,
             })
-            continue
-
-        score1, score2, comp = score_pair(s1, s2, weights)
-        if is_sex:
-            winner = 1  # forced: hap1 copy stays hap1, hap2 partner -> hap2
-            flag = 'sex_forced_hap1'
         else:
-            winner = 1 if score1 >= score2 else 2
-            flag = ''
-        rows.append({
-            'chrom': h1, 'h1_src': h1, 'h2_src': h2, 'strand': strand,
-            's1': s1, 's2': s2, 'score1': score1, 'score2': score2,
-            'comp': comp, 'is_sex': is_sex, 'flag': flag,
-            'winner_hap': winner,
-            'collision': len(h1_claims.get(h1, [])) > 1,
-        })
+            rows.append({
+                'chrom': h1, 'kind': 'h1_single', 'h1': h1, 'h2': None, 'strand': '+',
+                's1': sup1[h1], 's2': None, 'score1': None, 'score2': None,
+                'is_sex': False, 'winner_hap': 1, 'flag': 'hap1_only', 'collision': False,
+            })
 
-    # hap2 SUPERs that never matched a hap1 SUPER -> singletons on hap2 side
-    for h2 in sorted(sup2, key=super_num):
+    # --- autosomes only in hap2 (no confident hap1 partner) -> hap1 reference ---
+    for h2 in sorted([t for t in sup2 if not is_sex(t)], key=super_num):
         if h2 in used_h2:
             continue
-        is_sex = h2 in sex_set
         rows.append({
-            'chrom': h2, 'h1_src': '-', 'h2_src': h2, 'strand': '+',
+            'chrom': h2, 'kind': 'h2_single', 'h1': None, 'h2': h2, 'strand': '+',
             's1': None, 's2': sup2[h2], 'score1': None, 'score2': None,
-            'comp': None, 'is_sex': is_sex,
-            'flag': 'sex_forced_hap1' if is_sex else 'hap2_singleton',
-            'winner_hap': 1 if is_sex else 2,
+            'is_sex': False, 'winner_hap': 1, 'flag': 'hap2_only_to_hap1', 'collision': False,
         })
 
+    # --- sex chromosomes: matched by token name across haps, all -> hap1 ---
+    sex_tokens = sorted(
+        {t for t in sup1 if is_sex(t)} | {t for t in sup2 if is_sex(t)},
+        key=lambda t: (super_num(t), t))
+    for tok in sex_tokens:
+        in1, in2 = tok in sup1, tok in sup2
+        if in1 and in2:
+            s1, s2 = sup1[tok], sup2[tok]
+            sc1, sc2 = score_pair(s1, s2, weights)
+            rows.append({
+                'chrom': tok, 'kind': 'pair', 'h1': tok, 'h2': tok,
+                'strand': self_strand.get(tok, '+'),
+                's1': s1, 's2': s2, 'score1': sc1, 'score2': sc2, 'is_sex': True,
+                'winner_hap': 1 if sc1 >= sc2 else 2, 'flag': 'sex_both_haps',
+                'collision': False,
+            })
+        elif in1:
+            rows.append({
+                'chrom': tok, 'kind': 'h1_single', 'h1': tok, 'h2': None, 'strand': '+',
+                's1': sup1[tok], 's2': None, 'score1': None, 'score2': None,
+                'is_sex': True, 'winner_hap': 1, 'flag': 'sex_hap1', 'collision': False,
+            })
+        else:
+            rows.append({
+                'chrom': tok, 'kind': 'h2_single', 'h1': None, 'h2': tok, 'strand': '+',
+                's1': None, 's2': sup2[tok], 'score1': None, 'score2': None,
+                'is_sex': True, 'winner_hap': 1, 'flag': 'sex_hap2', 'collision': False,
+            })
+
     # ---- assignment report ----
-    report_path = os.path.join(args.outdir, f"{prefix}.assignment.tsv")
-    corr_path = os.path.join(args.outdir, f"{prefix}.correspondence.tsv")
     header = ['chrom', 'h1_src', 'h2_src', 'strand', 'is_sex',
               'len_h1', 'len_h2', 'gaps_h1', 'gaps_h2', 'busco_h1', 'busco_h2',
               'score_h1', 'score_h2', 'hap1_gets', 'hap2_gets', 'flag']
@@ -486,21 +498,19 @@ def main():
     def fmt(v):
         if v is None:
             return '-'
-        if isinstance(v, float):
-            return f"{v:.3f}"
-        return str(v)
+        return f"{v:.3f}" if isinstance(v, float) else str(v)
 
     report_lines = ['\t'.join(header)]
     for r in rows:
         s1, s2 = r['s1'], r['s2']
-        if r['winner_hap'] == 1:
-            hap1_gets = r['h1_src'] if r['h1_src'] != '-' else r['h2_src']
-            hap2_gets = r['h2_src'] if (s2 and r['h1_src'] != '-') else '-'
+        if r['kind'] == 'pair':
+            hap1_gets, hap2_gets = (r['h1'], r['h2']) if r['winner_hap'] == 1 else (r['h2'], r['h1'])
+        elif r['kind'] == 'h1_single':
+            hap1_gets, hap2_gets = r['h1'], '-'
         else:
-            hap1_gets = r['h2_src']
-            hap2_gets = r['h1_src']
+            hap1_gets, hap2_gets = r['h2'], '-'
         report_lines.append('\t'.join(fmt(x) for x in [
-            r['chrom'], r['h1_src'], r['h2_src'], r['strand'], r['is_sex'],
+            r['chrom'], r['h1'] or '-', r['h2'] or '-', r['strand'], r['is_sex'],
             s1['length'] if s1 else None, s2['length'] if s2 else None,
             s1['gap_count'] if s1 else None, s2['gap_count'] if s2 else None,
             s1['busco'] if s1 else None, s2['busco'] if s2 else None,
@@ -510,60 +520,71 @@ def main():
     if args.dry_run:
         eprint("\n[dry-run] assignment table:")
         print('\n'.join(report_lines))
-        eprint("\n[dry-run] no FASTA / report files written.")
+        eprint("\n[dry-run] no FASTA / lookup files written.")
         return
+
+    out1_path = os.path.join(args.outdir, f"{prefix}.reassigned.hap1.fa")
+    out2_path = os.path.join(args.outdir, f"{prefix}.reassigned.hap2.fa")
+    report_path = os.path.join(args.outdir, f"{prefix}.reassigned.assignment.tsv")
+    lookup_path = os.path.join(args.outdir, f"{prefix}.reassigned.lookup.tsv")
 
     with open(report_path, 'w') as fh:
         fh.write('\n'.join(report_lines) + '\n')
-    with open(corr_path, 'w') as fh:
-        for h2, info in sorted(h2_to_h1.items(), key=lambda kv: super_num(kv[1]['h1'])):
-            fh.write(f"{info['h1']}\t{h2}\t{info['strand']}\n")
-    eprint(f"[write] {report_path}")
-    eprint(f"[write] {corr_path}")
 
-    # ---- write final FASTAs ----
-    out1_path = os.path.join(args.outdir, f"{prefix}_hap1.fa")
-    out2_path = os.path.join(args.outdir, f"{prefix}_hap2.fa")
+    # ---- write final FASTAs + lookup ----
+    lookup = [['new_name', 'orig_name', 'source_hap', 'orientation', 'dest']]
+    seen_hap1, seen_hap2 = {}, {}
 
-    def members_in_order(stats):
-        # SUPER first, then its unloc children
-        return sorted(stats['members'],
-                      key=lambda n: (1 if '_unloc' in n.lower() else 0, n))
+    def emit(out_fh, dest, canon, src_stats, rec, src_hap, rc):
+        """Write all members of src_stats to out_fh, renamed to `canon` parent,
+        with rc applied. Records lookup rows and tracks output-name collisions."""
+        src_parent = src_stats['members'][0]
+        src_parent = parent_token(rec[src_parent]['token'])
+        for m in members_in_order(src_stats):
+            suffix = member_suffix(rec[m]['token'], src_parent)
+            new = canon + suffix
+            seen = seen_hap1 if dest == 'hap1' else seen_hap2
+            seen[new] = seen.get(new, 0) + 1
+            write_record(out_fh, new, rec[m]['seq'], rc=rc)
+            lookup.append([new, m, src_hap, '-' if rc else '+', dest])
 
     with open(out1_path, 'w') as o1, open(out2_path, 'w') as o2:
         for r in rows:
-            canon = r['chrom']  # canonical name = hap1 SUPER (or hap2 singleton name)
-            if r['winner_hap'] == 1 and r['h1_src'] != '-':
-                # hap1 copy -> hap1 output (no rename/reorient needed)
-                for m in members_in_order(sup1[r['h1_src']]):
-                    write_record(o1, m, rec1[m]['seq'])
-                # hap2 partner -> hap2 output, reoriented + renamed to canon
-                if r['h2_src'] != '-' and r['s2'] is not None:
-                    rc = (r['strand'] == '-')
-                    for m in members_in_order(sup2[r['h2_src']]):
-                        new = m.replace(r['h2_src'], canon, 1)
-                        write_record(o2, new, rec2[m]['seq'], rc=rc)
-            elif r['winner_hap'] == 2:
-                # hap2 copy wins -> hap1 output, reoriented + renamed to canon
-                rc = (r['strand'] == '-')
-                for m in members_in_order(sup2[r['h2_src']]):
-                    new = m.replace(r['h2_src'], canon, 1)
-                    write_record(o1, new, rec2[m]['seq'], rc=rc)
-                # hap1 copy -> hap2 output (keeps its name = canon)
-                for m in members_in_order(sup1[r['h1_src']]):
-                    write_record(o2, m, rec1[m]['seq'])
-            else:
-                # hap2-only singleton forced to hap1 (sex) or kept on hap2
-                target = o1 if r['winner_hap'] == 1 else o2
-                for m in members_in_order(sup2[r['h2_src']]):
-                    write_record(target, m, rec2[m]['seq'])
+            canon = r['chrom']
+            rc = (r['strand'] == '-')
+            if r['kind'] == 'pair':
+                if r['winner_hap'] == 1:
+                    emit(o1, 'hap1', canon, sup1[r['h1']], rec1, 'hap1', False)
+                    emit(o2, 'hap2', canon, sup2[r['h2']], rec2, 'hap2', rc)
+                else:
+                    emit(o1, 'hap1', canon, sup2[r['h2']], rec2, 'hap2', rc)
+                    emit(o2, 'hap2', canon, sup1[r['h1']], rec1, 'hap1', False)
+            elif r['kind'] == 'h1_single':
+                emit(o1, 'hap1', canon, sup1[r['h1']], rec1, 'hap1', False)
+            else:  # h2_single -> hap1
+                emit(o1, 'hap1', canon, sup2[r['h2']], rec2, 'hap2', False)
 
-        # unplaced scaffolds: keep with their originating haplotype
         for m in unp1:
             write_record(o1, m, rec1[m]['seq'])
+            lookup.append([m, m, 'hap1', '+', 'hap1'])
         for m in unp2:
             write_record(o2, m, rec2[m]['seq'])
+            lookup.append([m, m, 'hap2', '+', 'hap2'])
 
+    with open(lookup_path, 'w') as fh:
+        for row in lookup:
+            fh.write('\t'.join(row) + '\n')
+
+    # collision warnings (duplicate output names within a haplotype)
+    dups1 = sorted(n for n, c in seen_hap1.items() if c > 1)
+    dups2 = sorted(n for n, c in seen_hap2.items() if c > 1)
+    if dups1:
+        eprint(f"WARNING: duplicate names in hap1 output (ambiguous correspondence): {dups1}")
+    if dups2:
+        eprint(f"WARNING: duplicate names in hap2 output: {dups2}")
+
+    eprint(f"[write] {report_path}")
+    eprint(f"[write] {lookup_path}")
     eprint(f"[write] {out1_path}")
     eprint(f"[write] {out2_path}")
     eprint("[done]")
