@@ -127,9 +127,16 @@ def build_windows(seq_len: int, window: int):
 # Per-window counting
 # ---------------------------------------------------------------------------
 
-def count_in_windows(runs, seq_len, window):
+def count_in_windows(runs, seq_len, window, motif_len):
     """
-    Given a list of (start, end, n_copies) runs, sum n_copies per window.
+    Given a list of (start, end, n_copies) runs, sum n_copies per window
+    and normalise to the bedgraph 0-1000 range.
+
+    Normalisation: max possible copies in a window = window_bp / motif_len,
+    so score = round(raw_copies / max_possible * 1000).  The last window of
+    a scaffold may be shorter than `window`, so max_possible is computed from
+    the actual window size (we - ws) rather than the nominal window size.
+
     Runs that span a window boundary are split proportionally by bp overlap.
     """
     wins = list(build_windows(seq_len, window))
@@ -145,7 +152,14 @@ def count_in_windows(runs, seq_len, window):
                 continue
             counts[wi] += ncopies * overlap / run_len
 
-    return wins, [round(c) for c in counts]
+    # Normalise each window individually so the truncated terminal window
+    # is not penalised relative to full-sized interior windows.
+    normalised = []
+    for (ws, we), raw in zip(wins, counts):
+        max_copies = (we - ws) / motif_len
+        normalised.append(round(raw / max_copies * 1000) if max_copies > 0 else 0)
+
+    return wins, normalised
 
 
 # ---------------------------------------------------------------------------
@@ -185,8 +199,9 @@ def _scan_scaffold(args_tuple):
         fwd_runs = find_tandem_runs(seq, fwd_motif, min_tandem, max_gap)
         rev_runs = find_tandem_runs(seq, rev_motif, min_tandem, max_gap)
 
-        wins_f, cnts_f = count_in_windows(fwd_runs, seq_len, window)
-        wins_r, cnts_r = count_in_windows(rev_runs, seq_len, window)
+        motif_len = len(fwd_motif)  # fwd and rev are the same length
+        wins_f, cnts_f = count_in_windows(fwd_runs, seq_len, window, motif_len)
+        wins_r, cnts_r = count_in_windows(rev_runs, seq_len, window, motif_len)
         cnts_c = [a + b for a, b in zip(cnts_f, cnts_r)]
 
         hits = []
