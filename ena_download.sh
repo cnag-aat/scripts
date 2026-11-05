@@ -37,6 +37,34 @@ urlencode() {
     echo "$encoded"
 }
 
+# Download a file, trying HTTPS first and falling back to FTP.
+# Both protocols serve the same path on ftp.sra.ebi.ac.uk; which one is
+# faster/reliable varies by site and over time (FTP data connections stall
+# from some networks). -c resumes any partial file, so switching protocol
+# or re-running the script never throws away bytes already downloaded.
+# Usage: download_file <host/path/encoded_name> <local_file>
+DOWNLOAD_ROUNDS=3     # rounds of HTTPS-then-FTP
+TRIES_PER_PROTOCOL=5  # wget attempts per protocol per round
+download_file() {
+    local path="$1" out="$2" round proto
+    for (( round=1 ; round<=DOWNLOAD_ROUNDS ; round++ )); do
+        for proto in https ftp; do
+            echo "Trying ${proto}://${path} (round ${round}/${DOWNLOAD_ROUNDS})"
+            if wget -c --retry-connrefused \
+                    --waitretry=10 \
+                    --read-timeout=60 \
+                    --timeout=30 \
+                    --tries="$TRIES_PER_PROTOCOL" \
+                    -O "$out" \
+                    "${proto}://${path}"; then
+                return 0
+            fi
+            echo "⚠ ${proto} download failed or stalled, switching protocol"
+        done
+    done
+    return 1
+}
+
 # Check if project ID provided
 if [ -z "$1" ]; then
     usage
@@ -238,7 +266,7 @@ jq -r ".[] | $JQ_SELECT | .instrument_platform + \"|\" + .sample_accession + \"|
         # URL encode the filename
         encoded_file=$(urlencode "$file")
         
-        URL="ftp://${dir}/${encoded_file}"
+        URL_PATH="${dir}/${encoded_file}"  # host/path without protocol
         EXPECTED_MD5="${MD5S[$i]}"
         ORIGINAL_FILE="$file"  # Use unencoded filename for local file
         
@@ -286,35 +314,25 @@ jq -r ".[] | $JQ_SELECT | .instrument_platform + \"|\" + .sample_accession + \"|
             fi
         fi
         
-        # Check if original file exists and handle appropriately
+        # An existing original file is usually a partial download from an
+        # interrupted run: keep it and let wget -c resume it. If it is
+        # actually complete, wget finishes immediately; if it is complete
+        # but corrupt, the MD5 check below catches it.
         if [ -f "$ORIGINAL_FILE" ]; then
-            EXISTING_MD5=$(md5sum "$ORIGINAL_FILE" | awk '{print $1}')
-            if [ "$EXISTING_MD5" == "$EXPECTED_MD5" ]; then
-                echo "✓ Original file exists with correct MD5, renaming"
-                mv "$ORIGINAL_FILE" "$NEW_FILE"
-                echo "✓ Renamed to $NEW_FILE"
-                echo "=========================================="
-                continue
-            else
-                echo "⚠ Existing file has incorrect MD5, removing and re-downloading"
-                rm "$ORIGINAL_FILE"
-            fi
+            echo "Found existing $ORIGINAL_FILE ($(wc -c < "$ORIGINAL_FILE" | tr -d ' ') bytes), resuming"
         fi
-        
+
         echo "Downloading: $ORIGINAL_FILE"
-        echo "URL: $URL"
+        echo "URL path: $URL_PATH"
         echo "Expected MD5: $EXPECTED_MD5"
         echo "=========================================="
-        
-        # Download file with improved settings
-        wget -c --retry-connrefused \
-             --waitretry=3 \
-             --read-timeout=60 \
-             --timeout=30 \
-             --tries=0 \
-             --passive-ftp \
-             "$URL"
-        
+
+        if ! download_file "$URL_PATH" "$ORIGINAL_FILE"; then
+            echo "✗ ERROR: Download of $ORIGINAL_FILE failed over both HTTPS and FTP; partial file kept, re-run to resume"
+            echo "=========================================="
+            continue
+        fi
+
         # Verify checksum and rename
         if [ -f "$ORIGINAL_FILE" ]; then
             ACTUAL_MD5=$(md5sum "$ORIGINAL_FILE" | awk '{print $1}')
