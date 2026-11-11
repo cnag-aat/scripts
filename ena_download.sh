@@ -8,6 +8,7 @@ usage() {
     echo "  --info                Show available data without downloading"
     echo "  --urls                Output download URLs only (properly escaped)"
     echo "  --strategy <list>     Download only specified library strategies (comma-separated)"
+    echo "  -j, --jobs <N>        Download N files in parallel (default: 4)"
     echo ""
     echo "Examples:"
     echo "  $0 PRJEB91173 --info"
@@ -16,6 +17,7 @@ usage() {
     echo "  $0 PRJEB91173 --strategy RNA-Seq"
     echo "  $0 PRJEB91173 --strategy 'WGS,RNA-Seq'"
     echo "  $0 PRJEB91173 --strategy 'Hi-C' --info"
+    echo "  $0 PRJEB91173 --jobs 8"
     echo ""
     exit 1
 }
@@ -55,6 +57,7 @@ download_file() {
                     --read-timeout=60 \
                     --timeout=30 \
                     --tries="$TRIES_PER_PROTOCOL" \
+                    --progress="$WGET_PROGRESS" \
                     -O "$out" \
                     "${proto}://${path}"; then
                 return 0
@@ -63,6 +66,98 @@ download_file() {
         done
     done
     return 1
+}
+
+# Download one file, verify its MD5 and rename it.
+# Usage: process_file <platform> <library_strategy> <sample_acc> <run_acc>
+#                     <file_type> <host/path/name> <expected_md5>
+# Returns 0 if the file is present and verified at the end, 1 otherwise.
+process_file() {
+    local platform="$1" library_strat="$2" sample_acc="$3" run_acc="$4"
+    local file_type="$5" url="$6" expected_md5="$7"
+    local dir file url_path original_file read_num ext new_file actual_md5
+
+    # Split path and filename; URL-encode only the filename
+    dir=$(dirname "$url")
+    file=$(basename "$url")
+    url_path="${dir}/$(urlencode "$file")"  # host/path without protocol
+    original_file="$file"  # Use unencoded filename for local file
+
+    # Extract read number and extension
+    if [[ $original_file =~ _([12])\.fastq\.gz$ ]]; then
+        read_num="${BASH_REMATCH[1]}"
+        ext=".fastq.gz"
+    elif [[ $original_file =~ \.([^.]+)$ ]]; then
+        # For submitted files, preserve original extension
+        read_num=""
+        ext=".${BASH_REMATCH[1]}"
+        # Handle compound extensions like .fastq.gz
+        if [[ $original_file =~ \.([^.]+\.[^.]+)$ ]]; then
+            ext=".${BASH_REMATCH[1]}"
+        fi
+    else
+        read_num=""
+        ext=""
+    fi
+
+    # Create new filename: platform.library_strategy.sample_accession.run_accession[.READ_NUM].ext
+    if [ -n "$read_num" ]; then
+        new_file="${platform}.${library_strat}.${sample_acc}.${run_acc}.${read_num}${ext}"
+    else
+        new_file="${platform}.${library_strat}.${sample_acc}.${run_acc}${ext}"
+    fi
+
+    echo "Processing: $new_file (platform $platform, sample $sample_acc, strategy $library_strat, run $run_acc, type $file_type)"
+
+    # Check if renamed file already exists with correct MD5
+    if [ -f "$new_file" ]; then
+        if [ "$(md5sum "$new_file" | awk '{print $1}')" == "$expected_md5" ]; then
+            echo "✓ File already exists with correct MD5, skipping"
+            return 0
+        fi
+        echo "⚠ File exists but has incorrect MD5, will re-download"
+        rm "$new_file"
+    fi
+
+    # An existing original file is usually a partial download from an
+    # interrupted run: keep it and let wget -c resume it. If it is
+    # actually complete, wget finishes immediately; if it is complete
+    # but corrupt, the MD5 check below catches it.
+    if [ -f "$original_file" ]; then
+        echo "Found existing $original_file ($(wc -c < "$original_file" | tr -d ' ') bytes), resuming"
+    fi
+
+    echo "Downloading: $original_file (expected MD5 $expected_md5)"
+
+    if ! download_file "$url_path" "$original_file"; then
+        echo "✗ ERROR: Download of $original_file failed over both HTTPS and FTP; partial file kept, re-run to resume"
+        return 1
+    fi
+
+    # Verify checksum and rename
+    if [ ! -f "$original_file" ]; then
+        echo "✗ ERROR: File $original_file not found after download"
+        return 1
+    fi
+    actual_md5=$(md5sum "$original_file" | awk '{print $1}')
+    if [ "$actual_md5" == "$expected_md5" ]; then
+        mv "$original_file" "$new_file"
+        echo "✓ Checksum verified, renamed to $new_file"
+        return 0
+    fi
+    echo "✗ ERROR: Checksum mismatch for $original_file (got $actual_md5), renaming to ${original_file}.corrupt"
+    mv "$original_file" "${original_file}.corrupt"
+    return 1
+}
+
+# Run process_file with every output line prefixed by the file name, so the
+# logs of parallel downloads stay readable when they interleave.
+process_file_logged() {
+    local name status
+    name=$(basename "$6")
+    process_file "$@" 2>&1 | awk -v p="[$name] " '{ print p $0; fflush() }'
+    status=${PIPESTATUS[0]}
+    return "$status"
 }
 
 # Check if project ID provided
@@ -77,6 +172,7 @@ shift
 INFO_ONLY=false
 URLS_ONLY=false
 STRATEGY_FILTER=""
+JOBS=4
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -90,6 +186,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --strategy)
             STRATEGY_FILTER="$2"
+            shift 2
+            ;;
+        -j|--jobs)
+            JOBS="$2"
+            if ! [[ "$JOBS" =~ ^[1-9][0-9]*$ ]]; then
+                echo "Error: --jobs needs a positive integer, got '$JOBS'"
+                usage
+            fi
             shift 2
             ;;
         -h|--help)
@@ -227,134 +331,56 @@ fi
 echo "Filtering for library strategies: $STRATEGY_FILTER" >&2
 echo "" >&2
 
-# Parse JSON and download files
+# Settings and functions the parallel workers (bash -c under xargs) need
+if [ "$JOBS" -eq 1 ] && [ -t 1 ]; then
+    WGET_PROGRESS="bar"
+else
+    # One line per 32 MB: readable in batch logs and when jobs interleave
+    WGET_PROGRESS="dot:giga"
+fi
+export DOWNLOAD_ROUNDS TRIES_PER_PROTOCOL WGET_PROGRESS
+export -f urlencode download_file process_file process_file_logged
+
+echo "Downloading with $JOBS parallel job(s)" >&2
+
+# List every file to download as 7 NUL-separated fields
+# (platform, strategy, sample, run, type, url, md5), then hand them to
+# xargs, which runs up to $JOBS process_file_logged workers at once.
 jq -r ".[] | $JQ_SELECT | .instrument_platform + \"|\" + .sample_accession + \"|\" + .library_strategy + \"|\" + .run_accession + \"|\" + (.fastq_ftp // \"\") + \"|\" + (.fastq_md5 // \"\") + \"|\" + (.submitted_ftp // \"\") + \"|\" + (.submitted_md5 // \"\")" "$METADATA_FILE" | while IFS='|' read -r platform sample_acc library_strat run_acc fastq_ftp fastq_md5 submitted_ftp submitted_md5; do
-    
+
     # Determine which files to download (prefer fastq, fallback to submitted)
     if [ -n "$fastq_ftp" ] && [ -n "$fastq_md5" ]; then
         FTP_URLS="$fastq_ftp"
         MD5_SUMS="$fastq_md5"
         FILE_TYPE="fastq"
-        echo ""
-        echo "=========================================="
-        echo "Using generated FASTQ files"
     elif [ -n "$submitted_ftp" ] && [ -n "$submitted_md5" ]; then
         FTP_URLS="$submitted_ftp"
         MD5_SUMS="$submitted_md5"
         FILE_TYPE="submitted"
-        echo ""
-        echo "=========================================="
-        echo "⚠ No generated FASTQ available, using submitted files"
+        echo "⚠ No generated FASTQ available for run $run_acc, using submitted files" >&2
     else
-        echo ""
-        echo "=========================================="
-        echo "✗ No files available for run $run_acc"
-        echo "=========================================="
+        echo "✗ No files available for run $run_acc" >&2
         continue
     fi
-    
+
     # Split multiple files (semicolon separated)
     IFS=';' read -ra URLS <<< "$FTP_URLS"
     IFS=';' read -ra MD5S <<< "$MD5_SUMS"
-    
-    # Download each file
+
     for i in "${!URLS[@]}"; do
-        # Split path and filename for URL encoding
-        dir=$(dirname "${URLS[$i]}")
-        file=$(basename "${URLS[$i]}")
-        
-        # URL encode the filename
-        encoded_file=$(urlencode "$file")
-        
-        URL_PATH="${dir}/${encoded_file}"  # host/path without protocol
-        EXPECTED_MD5="${MD5S[$i]}"
-        ORIGINAL_FILE="$file"  # Use unencoded filename for local file
-        
-        # Extract read number and extension
-        if [[ $ORIGINAL_FILE =~ _([12])\.fastq\.gz$ ]]; then
-            READ_NUM="${BASH_REMATCH[1]}"
-            EXT=".fastq.gz"
-        elif [[ $ORIGINAL_FILE =~ \.([^.]+)$ ]]; then
-            # For submitted files, preserve original extension
-            READ_NUM=""
-            EXT=".${BASH_REMATCH[1]}"
-            # Handle compound extensions like .fastq.gz
-            if [[ $ORIGINAL_FILE =~ \.([^.]+\.[^.]+)$ ]]; then
-                EXT=".${BASH_REMATCH[1]}"
-            fi
-        else
-            READ_NUM=""
-            EXT=""
-        fi
-        
-        # Create new filename: platform.library_strategy.sample_accession.run_accession[.READ_NUM].ext
-        if [ -n "$READ_NUM" ]; then
-            NEW_FILE="${platform}.${library_strat}.${sample_acc}.${run_acc}.${READ_NUM}${EXT}"
-        else
-            NEW_FILE="${platform}.${library_strat}.${sample_acc}.${run_acc}${EXT}"
-        fi
-        
-        echo "Processing: $NEW_FILE"
-        echo "Platform: $platform"
-        echo "Sample: $sample_acc"
-        echo "Strategy: $library_strat"
-        echo "Run: $run_acc"
-        echo "Type: $FILE_TYPE"
-        
-        # Check if renamed file already exists with correct MD5
-        if [ -f "$NEW_FILE" ]; then
-            EXISTING_MD5=$(md5sum "$NEW_FILE" | awk '{print $1}')
-            if [ "$EXISTING_MD5" == "$EXPECTED_MD5" ]; then
-                echo "✓ File already exists with correct MD5, skipping"
-                echo "=========================================="
-                continue
-            else
-                echo "⚠ File exists but has incorrect MD5, will re-download"
-                rm "$NEW_FILE"
-            fi
-        fi
-        
-        # An existing original file is usually a partial download from an
-        # interrupted run: keep it and let wget -c resume it. If it is
-        # actually complete, wget finishes immediately; if it is complete
-        # but corrupt, the MD5 check below catches it.
-        if [ -f "$ORIGINAL_FILE" ]; then
-            echo "Found existing $ORIGINAL_FILE ($(wc -c < "$ORIGINAL_FILE" | tr -d ' ') bytes), resuming"
-        fi
-
-        echo "Downloading: $ORIGINAL_FILE"
-        echo "URL path: $URL_PATH"
-        echo "Expected MD5: $EXPECTED_MD5"
-        echo "=========================================="
-
-        if ! download_file "$URL_PATH" "$ORIGINAL_FILE"; then
-            echo "✗ ERROR: Download of $ORIGINAL_FILE failed over both HTTPS and FTP; partial file kept, re-run to resume"
-            echo "=========================================="
-            continue
-        fi
-
-        # Verify checksum and rename
-        if [ -f "$ORIGINAL_FILE" ]; then
-            ACTUAL_MD5=$(md5sum "$ORIGINAL_FILE" | awk '{print $1}')
-            echo "Actual MD5:   $ACTUAL_MD5"
-            
-            if [ "$ACTUAL_MD5" == "$EXPECTED_MD5" ]; then
-                echo "✓ Checksum verified for $ORIGINAL_FILE"
-                mv "$ORIGINAL_FILE" "$NEW_FILE"
-                echo "✓ Renamed to $NEW_FILE"
-            else
-                echo "✗ ERROR: Checksum mismatch for $ORIGINAL_FILE"
-                echo "  Renaming to ${ORIGINAL_FILE}.corrupt"
-                mv "$ORIGINAL_FILE" "${ORIGINAL_FILE}.corrupt"
-            fi
-        else
-            echo "✗ ERROR: File $ORIGINAL_FILE not found after download"
-        fi
+        printf '%s\0' "$platform" "$library_strat" "$sample_acc" "$run_acc" \
+            "$FILE_TYPE" "${URLS[$i]}" "${MD5S[$i]}"
     done
-done
+done | xargs -0 -n 7 -P "$JOBS" bash -c 'process_file_logged "$@"' _
+XARGS_STATUS=$?
 
 echo ""
 echo "=========================================="
-echo "Download complete!"
+if [ "$XARGS_STATUS" -eq 0 ]; then
+    echo "Download complete!"
+else
+    echo "✗ Some files failed to download or verify (search the log for ✗); re-run to resume"
+fi
 echo "Metadata saved to: $METADATA_FILE"
 echo "=========================================="
+[ "$XARGS_STATUS" -eq 0 ]
