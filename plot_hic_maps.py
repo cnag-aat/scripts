@@ -32,12 +32,23 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.colors import LinearSegmentedColormap, LogNorm  # noqa: E402
 
-# Juicebox-like white -> red
+
+def rgb_cmap(name, colours):
+    """Colormap from 0-255 RGB tuples."""
+    return LinearSegmentedColormap.from_list(name, [tuple(c / 255 for c in rgb) for rgb in colours])
+
+
+# Juicebox-like white -> red (default)
 JUICEBOX = LinearSegmentedColormap.from_list("juicebox", ["#ffffff", "#ff0000"])
-# white -> yellow -> red -> black ("fall"-like, cooltools style)
-FALL = LinearSegmentedColormap.from_list(
-    "fall", ["#ffffff", "#ffeeaa", "#ffcc66", "#ff9933", "#ff3300", "#bb0000", "#330000"])
-CMAPS = {"juicebox": JUICEBOX, "fall": FALL}
+# cooltools "fall": white -> pale yellow -> orange -> red -> black (YlOrRd-based);
+# the look of HiGlass-style maps in genome notes
+FALL = rgb_cmap("fall", [
+    (255, 255, 255), (255, 255, 204), (255, 237, 160), (254, 217, 118), (254, 178, 76),
+    (253, 141, 60), (252, 78, 42), (227, 26, 28), (189, 0, 38), (128, 0, 38), (0, 0, 0)])
+# HiGlass default heatmap: white -> orange -> red -> black
+HIGLASS = rgb_cmap("higlass", [
+    (255, 255, 255), (245, 166, 35), (208, 2, 27), (0, 0, 0)])
+CMAPS = {"juicebox": JUICEBOX, "fall": FALL, "higlass": HIGLASS}
 
 # CHR_1_OZ212012.1 | CHR_X | SUPER_1 | Chr_3 | chr12 ; not SUPER_12_unloc_1
 CHROM_RE = re.compile(r"^(?:CHR|Chr|chr|SUPER)_?([A-Za-z0-9]+)(?:_([A-Z]{1,6}_?\d+\.\d+))?$")
@@ -64,9 +75,17 @@ def parse_args():
     p.add_argument("--raw", action="store_true",
                    help="plot raw counts instead of balanced (ICE) values")
     p.add_argument("--cmap", default="juicebox",
-                   help="juicebox, fall, or any matplotlib colormap name [juicebox]")
-    p.add_argument("--vmin-pct", type=float, default=5.0,
-                   help="lower colour limit as percentile of non-zero pixels [5]")
+                   help="juicebox, fall (cooltools), higlass, or any matplotlib colormap "
+                        "name [juicebox]")
+    p.add_argument("--label-style", default="split",
+                   choices=["split", "combined", "number", "accession"],
+                   help="split: chromosome number on top, accession on the left; "
+                        "combined: '1 (OZ212012.1)' on both axes; number / accession: "
+                        "that on both axes. Without accessions the number is used [split]")
+    p.add_argument("--vmin-pct", type=float, default=None,
+                   help="lower colour limit as percentile of non-zero pixels "
+                        "[5 for juicebox; 50 for fall/higlass, which gives the pale "
+                        "background of genome-note figures]")
     p.add_argument("--vmax-pct", type=float, default=99.5,
                    help="upper colour limit as percentile of non-zero pixels [99.5]")
     p.add_argument("--size", type=float, default=10.0, help="figure width/height in inches [10]")
@@ -161,19 +180,28 @@ def find_chromosomes(chromsizes, chrom_regex, min_size):
         m = rx.match(name)
         if m:
             acc = m.group(2) if (m.re.groups >= 2) else None
-            labels[name] = f"{m.group(1)} ({acc})" if acc else m.group(1)
+            labels[name] = (m.group(1), acc)
     if labels:
         print(f"{len(chromsizes)} sequences, {len(labels)} chromosomes (labelled by name)")
         return labels
     print(f"  [warn] no sequence named like a chromosome (/{chrom_regex}/); is this a "
           f"chromosome-level assembly? Labelling sequences >= {min_size:,.0f} bp instead.",
           file=sys.stderr)
-    labels = {n: n for n, L in chromsizes.items() if L >= min_size}
+    labels = {n: (n, None) for n, L in chromsizes.items() if L >= min_size}
     if not labels:
         print("  [warn] no sequence reaches --min-size either: nothing will be labelled",
               file=sys.stderr)
     print(f"{len(chromsizes)} sequences, {len(labels)} >= {min_size:,.0f} bp (labelled)")
     return labels
+
+
+def axis_labels(label, style):
+    """(top, left) tick labels for a (number, accession) pair."""
+    num, acc = label
+    combined = f"{num} ({acc})" if acc else num
+    acc = acc or num
+    return {"split": (num, acc), "combined": (combined, combined),
+            "number": (num, num), "accession": (acc, acc)}[style]
 
 
 def draw_map(mat, extent, cmap, vmin, vmax, size, cbar_label):
@@ -272,12 +300,15 @@ def genome_maps(args, resolutions, formats, cmap, chrom_labels):
                 ax.axvline(b, color="0.35", lw=lw)
 
         mids = [starts[ch] + int(chromsizes[ch]) / 2 for ch in labelled]
-        labels = [chrom_labels[ch] for ch in labelled]
+        top, left = zip(*[axis_labels(chrom_labels[ch], args.label_style)
+                          for ch in labelled]) if labelled else ((), ())
         fs = args.fontsize or max(3.0, min(9.0, 0.8 * args.size * 72 / max(1, len(labelled)) / 1.6))
         ax.set_xticks(mids)
-        ax.set_xticklabels(labels, rotation=90, fontsize=fs)
+        # short labels (chromosome numbers) read best horizontal
+        ax.set_xticklabels(top, rotation=0 if max(map(len, top), default=0) <= 3 else 90,
+                           fontsize=fs)
         ax.set_yticks(mids)
-        ax.set_yticklabels(labels, fontsize=fs)
+        ax.set_yticklabels(left, fontsize=fs)
         ax.xaxis.tick_top()
         ax.tick_params(length=0, pad=2)
         ax.set_xlim(0, total)
@@ -312,7 +343,7 @@ def chrom_maps(args, resolutions, formats, cmap, chrom_labels):
         ax.set_xlabel("Mb", fontsize=9)
         ax.set_ylabel("Mb", fontsize=9)
         ax.tick_params(labelsize=8)
-        name = chrom_labels[ch]
+        name = axis_labels(chrom_labels[ch], "combined")[0]
         fig.text(0.10, 0.005, f"{name}  —  {fmt_res(res)} bins", fontsize=9, va="bottom")
         safe = re.sub(r"[^\w.\-]", "_", ch)
         print(f"{ch} @ {fmt_res(res)}")
@@ -327,6 +358,8 @@ def main():
     os.makedirs(args.outdir, exist_ok=True)
     formats = [f.strip().lstrip(".") for f in args.formats.split(",") if f.strip()]
     cmap = get_cmap(args.cmap)
+    if args.vmin_pct is None:
+        args.vmin_pct = 50.0 if args.cmap in ("fall", "higlass") else 5.0
     resolutions = available_resolutions(args.mcool)
     print(f"resolutions in {args.mcool}: {', '.join(fmt_res(r) for r in resolutions)}")
     chrom_labels = find_chromosomes(open_cooler(args.mcool, resolutions[0]).chromsizes,
